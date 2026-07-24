@@ -112,6 +112,7 @@ final class SpendLedger {
 
     init(fileURL: URL? = nil) {
         self.fileURL = fileURL ?? AppPaths.applicationSupport.appendingPathComponent("spend-ledger.json")
+        var retiredMaskedResetWarning = false
         if let raw = try? Data(contentsOf: self.fileURL),
            let decoded = try? JSONDecoder().decode([String: Entry].self, from: raw) {
             entries = Dictionary(uniqueKeysWithValues: decoded.compactMap { pair in
@@ -121,6 +122,7 @@ final class SpendLedger {
                 // gaps are routine (for example, a sleeping laptop), so retire only that
                 // obsolete persisted warning while preserving every other uncertainty.
                 if Self.isRetiredMaskedResetWarning(value.monthUncertainReason) {
+                    retiredMaskedResetWarning = true
                     value.monthUncertain = false
                     value.monthUncertainReason = nil
                     value.lowConfidence = false
@@ -131,6 +133,10 @@ final class SpendLedger {
         } else {
             entries = [:]
         }
+        // Make the narrowly scoped migration durable immediately. Waiting for the next
+        // provider poll leaves the retired warning on disk and lets it return on a quick
+        // restart, even though all other persisted state is already valid.
+        if retiredMaskedResetWarning { save() }
     }
 
     /// The last reconstructed entry for a provider (for display on launch, before any

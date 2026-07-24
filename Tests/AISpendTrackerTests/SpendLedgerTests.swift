@@ -21,6 +21,11 @@ final class SpendLedgerTests: XCTestCase {
         SpendLedger.reconstruct(prior: prior, rawCents: raw, cycleResetsAt: resets, now: now, calendar: cal)
     }
 
+    private func tempURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("spend-ledger-test-\(UUID().uuidString).json")
+    }
+
     // MARK: - First run
 
     func testFirstRunSeedsCarryInZero() {
@@ -159,6 +164,36 @@ final class SpendLedgerTests: XCTestCase {
         XCTAssertFalse(s2.lowConfidence)
         XCTAssertFalse(s2.isMonthUncertain)
         XCTAssertEqual(s2.monthSpendCents, 100)
+    }
+
+    @MainActor
+    func testLoadingRetiresOnlyTheObsoleteMaskedResetWarning() throws {
+        let url = tempURL(); defer { try? FileManager.default.removeItem(at: url) }
+        let now = date(2026, 7, 10, 12)
+        let obsoleteClaude = SpendLedger.Entry(
+            calendarMonthKey: "2026-07", carryInCents: 0, completedCents: 0,
+            rawProviderCents: 48616, cycleKey: nil, cycleResetsAt: nil,
+            lastSampleAt: now, previousSampleAt: nil, lastResetAt: nil,
+            lastResetViaTimestamp: nil, lowConfidence: false, confidenceNote: nil,
+            monthUncertain: true,
+            monthUncertainReason: "Offline 6h; a reset could have gone unseen (no reset time from this provider).")
+        let untouchedCodex = SpendLedger.Entry(
+            calendarMonthKey: "2026-07", carryInCents: 25, completedCents: 10,
+            rawProviderCents: 75, cycleKey: "123", cycleResetsAt: now,
+            lastSampleAt: now, previousSampleAt: nil, lastResetAt: nil,
+            lastResetViaTimestamp: nil, lowConfidence: false, confidenceNote: nil,
+            monthUncertain: false, monthUncertainReason: nil)
+        try JSONEncoder().encode(["claude": obsoleteClaude, "codex": untouchedCodex]).write(to: url)
+
+        let ledger = SpendLedger(fileURL: url)
+        XCTAssertFalse(ledger.entry(.claude)!.isMonthUncertain)
+        XCTAssertEqual(ledger.entry(.codex), untouchedCodex)
+
+        let persisted = try JSONDecoder().decode([String: SpendLedger.Entry].self,
+                                                  from: Data(contentsOf: url))
+        XCTAssertFalse(persisted["claude"]!.isMonthUncertain)
+        XCTAssertNil(persisted["claude"]!.monthUncertainReason)
+        XCTAssertEqual(persisted["codex"], untouchedCodex)
     }
 
     /// A timestamped provider with a long gap and no reset is NOT low-confidence — any
