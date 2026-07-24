@@ -1,14 +1,26 @@
 import Foundation
 
-/// Persists each provider's last fetch attempt time and last successful snapshot to
-/// disk, so the app survives its own frequent restarts without re-hitting APIs. On
-/// launch we reuse this cache and only fetch a provider once its cooldown since the
-/// last *attempt* has elapsed. Keyed by `ProviderID` so providers are independent.
+/// Persists each provider's last fetch attempt time, last successful snapshot, and the
+/// error from its most recent attempt (if it failed) to disk, so the app survives its
+/// own frequent restarts without re-hitting APIs *and* without misrepresenting a
+/// known-broken provider as healthy. On launch we reuse this cache and only fetch a
+/// provider once its cooldown since the last *attempt* has elapsed. Keyed by
+/// `ProviderID` so providers are independent.
 @MainActor
 final class UsageStore {
     private struct ProviderCache: Codable {
+        /// When we last *attempted* a fetch (success or failure) — drives the cooldown
+        /// only. Deliberately distinct from `lastSuccessAt`: a failed attempt bumps this
+        /// but must not make stale data look freshly updated.
         var lastFetchAt: Date?
+        /// When we last *succeeded* — the freshness of `snapshot`, and what the "Updated
+        /// … ago" line reflects across restarts.
+        var lastSuccessAt: Date?
         var snapshot: ProviderSnapshot?
+        /// The user-facing message from the last attempt if it failed, else nil. Kept
+        /// with the snapshot so a restart restores the exact last-known display state:
+        /// a non-nil error over a retained snapshot is the stale (dimmed + ⚠︎) reading.
+        var lastError: String?
     }
     private struct Cache: Codable {
         var providers: [String: ProviderCache]
@@ -29,7 +41,9 @@ final class UsageStore {
     }
 
     func lastFetchAt(_ id: ProviderID) -> Date? { cache.providers[id.rawValue]?.lastFetchAt }
+    func lastSuccessAt(_ id: ProviderID) -> Date? { cache.providers[id.rawValue]?.lastSuccessAt }
     func snapshot(_ id: ProviderID) -> ProviderSnapshot? { cache.providers[id.rawValue]?.snapshot }
+    func lastError(_ id: ProviderID) -> String? { cache.providers[id.rawValue]?.lastError }
 
     /// Record that we hit `id`'s API at `date` (success or failure) — the cooldown is
     /// measured from this.
@@ -38,9 +52,21 @@ final class UsageStore {
         save()
     }
 
-    /// Record fresh data from a successful fetch of `id`.
-    func saveSnapshot(_ id: ProviderID, _ snapshot: ProviderSnapshot) {
+    /// Record fresh data from a successful fetch of `id` at `date`. Stamps the success
+    /// time (freshness) and clears any persisted error, since a success means the
+    /// provider is no longer in a failed state — keeping the invariant that `lastError`
+    /// is non-nil iff the last attempt failed.
+    func saveSnapshot(_ id: ProviderID, _ snapshot: ProviderSnapshot, at date: Date) {
         cache.providers[id.rawValue, default: ProviderCache()].snapshot = snapshot
+        cache.providers[id.rawValue, default: ProviderCache()].lastSuccessAt = date
+        cache.providers[id.rawValue, default: ProviderCache()].lastError = nil
+        save()
+    }
+
+    /// Record that `id`'s most recent attempt failed with `message`. The retained
+    /// snapshot (if any) is left untouched, so the pair reconstructs the stale reading.
+    func saveError(_ id: ProviderID, _ message: String) {
+        cache.providers[id.rawValue, default: ProviderCache()].lastError = message
         save()
     }
 

@@ -1,9 +1,12 @@
 import AppKit
 
 /// Renders usage into circles composited side by side into the single status-item
-/// image, one image shared with the dropdown header via the `Circle` list. Each
-/// provider contributes its window pies (or a single warning glyph when its last
-/// fetch failed), in `ProviderID` order, followed by the combined spend pie.
+/// image, and into the dropdown header via the same `Circle` list. Each provider
+/// contributes its window pies, in `ProviderID` order, followed by the combined spend
+/// pie. A provider whose latest fetch failed renders per the caller's `ErrorStyle`:
+/// the tray shows one compact warning glyph, while the header keeps its last good pies
+/// dimmed and flagged (best-effort stale data) — the one place the two intentionally
+/// diverge, because the header has room to show detail the cramped tray does not.
 ///
 /// Each pie draws two independent layers, both filling clockwise from 12 o'clock:
 ///   1. a black disc (the empty remainder),
@@ -43,6 +46,21 @@ enum PieChart {
         Palette(usage: NSColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: 1),
                 time: NSColor(srgbRed: r / 255 * 0.5, green: g / 255 * 0.5, blue: b / 255 * 0.5, alpha: 1),
                 over: .white)
+    }
+
+    /// A dimmed version of a palette for a provider's *stale* pies — the last good
+    /// reading kept on screen when the latest fetch errored. The brand hue survives so
+    /// the column still reads as that provider, but everything is darkened toward the
+    /// black disc so it clearly looks inactive; the maxed-out ring drops from white to a
+    /// muted gray so a capped stale window doesn't shout for attention.
+    static func dimmed(_ p: Palette) -> Palette {
+        Palette(usage: dim(p.usage, 0.5), time: dim(p.time, 0.6), over: dim(p.over, 0.45))
+    }
+
+    private static func dim(_ c: NSColor, _ factor: CGFloat) -> NSColor {
+        let s = c.usingColorSpace(.sRGB) ?? c
+        return NSColor(srgbRed: s.redComponent * factor, green: s.greenComponent * factor,
+                       blue: s.blueComponent * factor, alpha: 1)
     }
 
     // Untouched remainder — black.
@@ -124,13 +142,19 @@ enum PieChart {
         /// (recent peak rate), or nil when there isn't enough signal. Header-only.
         var pieTooltip: String?
         var sparkTooltip: String?
+        /// Whether this pie is a stale best-effort reading shown because the provider's
+        /// latest fetch errored (its colors are already dimmed via `dimmed(_:)`). The
+        /// dropdown header flags such columns with a ⚠︎ so the staleness is unmistakable;
+        /// the tray never emits these (it keeps the compact error glyph). Header-only.
+        var isStale: Bool
 
         init(kind: Kind, rawResponse: String? = nil, heading: String? = nil, caption: String,
              usageColor: NSColor, timeColor: NSColor, overColor: NSColor = .white,
              headingColor: NSColor? = nil,
              spark: [(Date, Double)] = [],
              resetsAt: Date? = nil, lastUpdated: Date? = nil,
-             pieTooltip: String? = nil, sparkTooltip: String? = nil) {
+             pieTooltip: String? = nil, sparkTooltip: String? = nil,
+             isStale: Bool = false) {
             self.kind = kind
             self.rawResponse = rawResponse
             self.heading = heading
@@ -144,12 +168,23 @@ enum PieChart {
             self.lastUpdated = lastUpdated
             self.pieTooltip = pieTooltip
             self.sparkTooltip = sparkTooltip
+            self.isStale = isStale
         }
     }
 
-    /// The ordered circles for a tray view model: each enabled provider's window
-    /// pies (or one warning glyph if it errored), then the combined spend pie when any
-    /// provider reports spend. A provider that hasn't fetched yet contributes nothing.
+    /// How a provider whose latest fetch errored is drawn.
+    ///   • `glyph` — one compact warning triangle in the provider's slot (the tray:
+    ///     space-constrained, so the alert glyph is the whole signal).
+    ///   • `staleData` — its last good windows redrawn as dimmed "stale" pies (the
+    ///     dropdown header: room to show best-effort data, flagged with a ⚠︎ and backed
+    ///     by the error message in the section below). Falls back to `glyph` when there's
+    ///     no retained snapshot to show.
+    enum ErrorStyle { case glyph, staleData }
+
+    /// The ordered circles for a tray view model: each enabled provider's window pies,
+    /// then the combined spend pie when any provider reports spend. A provider that
+    /// hasn't fetched yet contributes nothing. An errored provider renders per
+    /// `errorStyle` — a single warning glyph (tray) or its dimmed last-good pies (header).
     ///
     /// Each window's time wedge is computed at *that provider's* last-fetch moment
     /// (`lastUpdated`), not the live clock, so time never races ahead of the frozen
@@ -158,30 +193,19 @@ enum PieChart {
     /// `includeSpend` gates the trailing spend pie: the tray drops it in text/off
     /// display mode (the figure is drawn as the button title instead, or hidden),
     /// while the dropdown header always passes `true` to keep the rich spend column.
-    static func circles(from vm: TrayViewModel, now: Date = Date(), includeSpend: Bool = true) -> [Circle] {
+    static func circles(from vm: TrayViewModel, now: Date = Date(),
+                        includeSpend: Bool = true, errorStyle: ErrorStyle = .glyph) -> [Circle] {
         var out: [Circle] = []
         for p in vm.providers {
             let pal = palette(for: p.id)
-            if p.error != nil {
+            if p.error != nil, errorStyle == .staleData, let snap = p.snapshot, !snap.windows.isEmpty {
+                out += windowCircles(for: p, snapshot: snap, providerPalette: pal, now: now, stale: true)
+            } else if p.error != nil {
                 out.append(Circle(kind: .error, rawResponse: p.lastRawResponse,
                                   heading: p.displayName, caption: "unavailable",
                                   usageColor: pal.usage, timeColor: pal.time, lastUpdated: p.lastUpdated))
             } else if let snap = p.snapshot {
-                let at = p.lastUpdated ?? now
-                for w in snap.windows {
-                    let series = p.series(forWindow: w.caption)
-                    let wpal = w.isScoped ? scopedPalette : pal
-                    out.append(Circle(
-                        kind: .pie(time: UsageMath.timeFraction(w.timeBasis, resetsAt: w.resetsAt, now: at),
-                                   usage: UsageMath.usageFraction(utilization: w.utilization)),
-                        rawResponse: p.lastRawResponse, heading: p.displayName, caption: w.caption,
-                        usageColor: wpal.usage, timeColor: wpal.time, overColor: wpal.over,
-                        spark: series,
-                        resetsAt: w.resetsAt,
-                        lastUpdated: p.lastUpdated,
-                        pieTooltip: UsageMath.projectedText(w, now: at),
-                        sparkTooltip: UsageMath.recentPeakText(series, unit: .percent)))
-                }
+                out += windowCircles(for: p, snapshot: snap, providerPalette: pal, now: now, stale: false)
             }
         }
         if includeSpend && vm.hasAnySpend {
@@ -203,6 +227,31 @@ enum PieChart {
                 sparkTooltip: UsageMath.recentPeakText(vm.spendSeries, unit: .dollars)))
         }
         return out
+    }
+
+    /// One pie per window in a provider's snapshot, sharing the exact same layout for
+    /// live and stale readings. When `stale` is set the palette is dimmed and the circle
+    /// is flagged `isStale`, so a best-effort reading after a failed fetch differs from a
+    /// healthy one only in appearance — never in which columns or detail it shows.
+    private static func windowCircles(for p: ProviderView, snapshot snap: ProviderSnapshot,
+                                      providerPalette pal: Palette, now: Date, stale: Bool) -> [Circle] {
+        let at = p.lastUpdated ?? now
+        return snap.windows.map { w in
+            let series = p.series(forWindow: w.caption)
+            let base = w.isScoped ? scopedPalette : pal
+            let wpal = stale ? dimmed(base) : base
+            return Circle(
+                kind: .pie(time: UsageMath.timeFraction(w.timeBasis, resetsAt: w.resetsAt, now: at),
+                           usage: UsageMath.usageFraction(utilization: w.utilization)),
+                rawResponse: p.lastRawResponse, heading: p.displayName, caption: w.caption,
+                usageColor: wpal.usage, timeColor: wpal.time, overColor: wpal.over,
+                spark: series,
+                resetsAt: w.resetsAt,
+                lastUpdated: p.lastUpdated,
+                pieTooltip: UsageMath.projectedText(w, now: at),
+                sparkTooltip: UsageMath.recentPeakText(series, unit: .percent),
+                isStale: stale)
+        }
     }
 
     /// Compose the circles into one status-item image. `outline` is the hairline color

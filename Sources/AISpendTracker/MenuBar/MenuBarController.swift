@@ -201,9 +201,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(title)
         menu.addItem(.separator())
 
-        // Big rings mirror the tray image — shown only when there's something to draw
-        // (no enabled providers, or none fetched yet → omit the header entirely).
-        let circles = PieChart.circles(from: vm, now: now)
+        // Big rings mirror the tray image, except an errored provider keeps its last
+        // good pies here (dimmed + ⚠︎) instead of collapsing to the tray's alert glyph —
+        // best-effort data while the section below spells out the error. Shown only when
+        // there's something to draw (nothing enabled / nothing fetched → omit the header).
+        let circles = PieChart.circles(from: vm, now: now, errorStyle: .staleData)
         if !circles.isEmpty {
             ringsHeader.circles = circles
             ringsHeader.setFrameSize(NSSize(width: ringsHeader.preferredWidth, height: ringsHeader.preferredHeight))

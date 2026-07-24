@@ -8,9 +8,10 @@ import AppKit
 /// long ago that provider last fetched). Hover tooltips carry the extra detail:
 /// projected usage on the pie, the absolute reset time on the reset line, and recent
 /// peak on the sparkline. Clicking a provider column's "Updated" line copies that
-/// provider's last raw response (for debugging / error reports). Fed the same
-/// `PieChart.Circle` list as the tray image, so the two always agree. Draws nothing
-/// until `circles` is set.
+/// provider's last raw response (for debugging / error reports). Fed a `PieChart.Circle`
+/// list (built with `errorStyle: .staleData`, so an errored provider appears here as its
+/// dimmed last-good pies, marked with a ⚠︎, rather than the tray's alert glyph). Draws
+/// nothing until `circles` is set.
 @MainActor
 final class RingsHeaderView: NSView {
     /// The circles to render (in order); text/values/series come from each `Circle`.
@@ -74,6 +75,12 @@ final class RingsHeaderView: NSView {
         .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
         .foregroundColor: NSColor.labelColor,
     ]
+    /// The caption for a stale (errored-but-shown) column — grayed like the stat lines so
+    /// the whole column reads as inactive, reinforcing the dimmed pie and the ⚠︎ heading.
+    private static let captionAttrsStale: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+        .foregroundColor: NSColor.secondaryLabelColor,
+    ]
     private static let statAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
         .foregroundColor: NSColor.secondaryLabelColor,
@@ -97,15 +104,18 @@ final class RingsHeaderView: NSView {
             // Text lines, top-down, each centered in the column.
             var y = rects.ring.minY - captionGap - headingHeight
             if let heading = circle.heading {
-                // Bold, in the pie's highlight color, to tie the column to its ring.
+                // Bold, in the pie's highlight color, to tie the column to its ring. A
+                // stale column appends ⚠︎ so its best-effort/errored state is unmistakable.
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .bold),
                     .foregroundColor: circle.headingColor,
                 ]
-                drawLine(heading, attrs: attrs, columnX: colX, bottomY: y, height: headingHeight)
+                drawLine(circle.isStale ? "\(heading) ⚠︎" : heading,
+                         attrs: attrs, columnX: colX, bottomY: y, height: headingHeight)
             }
             y -= lineGap + captionHeight
-            drawLine(circle.caption, attrs: Self.captionAttrs, columnX: colX, bottomY: y, height: captionHeight)
+            drawLine(circle.caption, attrs: circle.isStale ? Self.captionAttrsStale : Self.captionAttrs,
+                     columnX: colX, bottomY: y, height: captionHeight)
 
             // "Updated: 3m ago" / "47s ago" — how long ago this provider last fetched.
             // Drawn at a fixed slot below the sparkline band (whether or not a sparkline
@@ -119,8 +129,10 @@ final class RingsHeaderView: NSView {
 
             guard case .pie(let time, let usage) = circle.kind else { continue }
             y -= lineGap + statHeight
-            // A maxed window (100%) shows its Usage line bright/bold instead of grayed.
-            let usageAttrs = usage >= 1 ? Self.statAttrsFull : Self.statAttrs
+            // A maxed window (100%) shows its Usage line bright/bold instead of grayed —
+            // but a stale column stays grayed throughout, so it never shouts louder than
+            // the live columns beside it.
+            let usageAttrs = (usage >= 1 && !circle.isStale) ? Self.statAttrsFull : Self.statAttrs
             drawLine("Usage: \(pct(usage))%", attrs: usageAttrs, columnX: colX, bottomY: y, height: statHeight)
             y -= lineGap + statHeight
             drawLine("Elapsed: \(pct(time))%", attrs: Self.statAttrs, columnX: colX, bottomY: y, height: statHeight)

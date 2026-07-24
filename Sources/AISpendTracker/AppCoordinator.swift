@@ -63,15 +63,20 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         guard runtimes[id] == nil else { return }
         let provider = makeProvider(id)
         let poller = UsagePoller(provider: provider, lastAttemptAt: store.lastFetchAt(id))
-        // Show the cached reading immediately (stamped with its real fetch time), so a
-        // restart within the cooldown isn't blank while we wait to re-fetch.
+        // Restore the exact last-known display state, so a restart within the cooldown
+        // isn't blank — and doesn't misrepresent the provider — while we wait to
+        // re-fetch. `lastUpdated` is the last *success* (data freshness), never the last
+        // attempt, so a stale reading never claims to be fresh; `error` is restored too,
+        // so a provider that was failing before the restart still reads as stale
+        // (dimmed + ⚠︎) rather than briefly healthy until the next fetch.
         // Show the persisted reconstruction on launch; do NOT re-ingest the cached
         // snapshot (it was already folded into the ledger when first fetched — replaying
         // it would double-count). A month rollover that happened while we were closed is
         // corrected by the first fresh fetch's `ingest`.
         runtimes[id] = Runtime(provider: provider, poller: poller,
                                history: UsageHistory(providerID: id),
-                               snapshot: store.snapshot(id), lastUpdated: store.lastFetchAt(id), error: nil,
+                               snapshot: store.snapshot(id), lastUpdated: store.lastSuccessAt(id),
+                               error: store.lastError(id),
                                lastRawResponse: rawStore.raw(id),
                                reconstructedSpend: spendLedger.entry(id))
 
@@ -79,7 +84,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         poller.onData = { [weak self] snapshot, raw in
             guard let self else { return }
             let at = Date()
-            self.store.saveSnapshot(id, snapshot)
+            self.store.saveSnapshot(id, snapshot, at: at)
             self.rawStore.record(id, raw: raw, at: at)
             self.runtimes[id]?.snapshot = snapshot
             self.runtimes[id]?.lastUpdated = at
@@ -96,6 +101,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         poller.onError = { [weak self] message, raw in
             guard let self else { return }
             self.runtimes[id]?.error = message
+            self.store.saveError(id, message)
             // Persist the failing body when the response carried one, so "copy last
             // response" surfaces the actual error payload rather than stale success.
             if let raw {

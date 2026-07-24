@@ -164,7 +164,7 @@ enum DebugRender {
         for (name, bg, suffix) in themes {
             let header = RingsHeaderView(frame: .zero)
             header.appearance = NSAppearance(named: name)
-            header.circles = PieChart.circles(from: vm, now: now)
+            header.circles = PieChart.circles(from: vm, now: now, errorStyle: .staleData)
             header.setFrameSize(NSSize(width: header.preferredWidth, height: header.preferredHeight))
             guard let rep = header.bitmapImageRepForCachingDisplay(in: header.bounds) else { continue }
             header.cacheDisplay(in: header.bounds, to: rep)
