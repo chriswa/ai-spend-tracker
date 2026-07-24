@@ -191,12 +191,14 @@ final class ClaudeUsageFetcherTests: XCTestCase {
         XCTAssertEqual(e.userMessage, "Usage API 503: service unavailable")
     }
 
-    /// Error taxonomy: no credentials is permanent, transient failures are not.
+    /// Error taxonomy: each error maps to its own user-facing message.
     func testClassify() {
         let f = ClaudeUsageFetcher()
-        XCTAssertTrue(f.classify(ClaudeUsageFetcher.NoOAuthCredentialsError()).permanent)
-        XCTAssertFalse(f.classify(ClaudeUsageFetcher.KeychainError(detail: "locked")).permanent)
-        XCTAssertFalse(f.classify(ClaudeUsageFetcher.UsageAPIError(status: 500, body: "")).permanent)
+        XCTAssertEqual(f.classify(ClaudeUsageFetcher.NoOAuthCredentialsError()),
+                       "No Claude subscription credentials in Keychain (API-key account?)")
+        XCTAssertTrue(f.classify(ClaudeUsageFetcher.KeychainError(detail: "locked")).contains("locked"))
+        XCTAssertEqual(f.classify(ClaudeUsageFetcher.UsageAPIError(status: 500, body: "")),
+                       "Usage API returned 500")
     }
 
     /// A decode failure wrapped in `ResponseParseError` still classifies as a parse
@@ -206,8 +208,7 @@ final class ClaudeUsageFetcherTests: XCTestCase {
         let f = ClaudeUsageFetcher()
         let underlying = DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad"))
         let wrapped = ResponseParseError(rawResponse: "{not json", underlying: underlying)
-        XCTAssertEqual(f.classify(wrapped).message, f.classify(underlying).message)
-        XCTAssertFalse(f.classify(wrapped).permanent)
+        XCTAssertEqual(f.classify(wrapped), f.classify(underlying))
         XCTAssertEqual((wrapped as RawResponseCarrying).rawResponse, "{not json")
     }
 

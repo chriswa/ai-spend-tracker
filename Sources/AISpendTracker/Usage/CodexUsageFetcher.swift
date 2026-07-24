@@ -67,22 +67,22 @@ final class CodexUsageFetcher: UsageProvider, @unchecked Sendable {
         }
     }
 
-    func classify(_ error: Error) -> (message: String, permanent: Bool) {
+    func classify(_ error: Error) -> String {
         switch error {
         case let e as ResponseParseError:
             return classify(e.underlying)
         case is NoAuthError:
-            return ("Not logged in to Codex (~/.codex/auth.json missing)", true)
+            return "Not logged in to Codex (~/.codex/auth.json missing)"
         case let e as UsageAPIError where e.status == 401:
-            return ("Codex token expired — open Codex to refresh it", false)
+            return "Codex token expired — open Codex to refresh it"
         case let e as UsageAPIError:
-            return ("Codex usage API returned \(e.status)", false)
+            return "Codex usage API returned \(e.status)"
         case let e as URLError:
-            return ("Network error: \(e.localizedDescription)", false)
+            return "Network error: \(e.localizedDescription)"
         case is DecodingError:
-            return ("Couldn't parse the Codex usage response", false)
+            return "Couldn't parse the Codex usage response"
         default:
-            return ("Fetch failed: \(error.localizedDescription)", false)
+            return "Fetch failed: \(error.localizedDescription)"
         }
     }
 

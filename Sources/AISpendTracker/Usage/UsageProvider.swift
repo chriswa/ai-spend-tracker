@@ -10,9 +10,9 @@ protocol UsageProvider: Sendable {
     /// Recommended seconds between fetches; the poller never fetches faster.
     var suggestedInterval: TimeInterval { get }
     func fetch() async throws -> FetchResult
-    /// Turn a fetch error into a short, user-facing message and whether it's
-    /// permanent (stop polling this provider) or transient (retry next cooldown).
-    func classify(_ error: Error) -> (message: String, permanent: Bool)
+    /// Turn a fetch error into a short, user-facing message. Every failure is
+    /// transient — the poller shows this message and retries next cooldown.
+    func classify(_ error: Error) -> String
 }
 
 /// A completed fetch: the parsed snapshot plus the exact response body it was parsed
@@ -94,7 +94,7 @@ struct MockProvider: UsageProvider {
     func fetch() async throws -> FetchResult {
         FetchResult(snapshot: snapshot, raw: "{\"mock\": \"\(id.rawValue)\"}")
     }
-    func classify(_ error: Error) -> (message: String, permanent: Bool) {
-        (error.localizedDescription, false)
+    func classify(_ error: Error) -> String {
+        error.localizedDescription
     }
 }

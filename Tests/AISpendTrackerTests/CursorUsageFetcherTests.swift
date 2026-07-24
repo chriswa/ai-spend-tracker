@@ -55,9 +55,12 @@ final class CursorUsageFetcherTests: XCTestCase {
 
     func testClassify() {
         let f = CursorUsageFetcher()
-        XCTAssertTrue(f.classify(CursorUsageFetcher.NoCredentialsError()).permanent)
-        XCTAssertTrue(f.classify(CursorUsageFetcher.MalformedTokenError()).permanent)
-        XCTAssertFalse(f.classify(CursorUsageFetcher.UnsupportedResponseError(body: "<html>")).permanent)
-        XCTAssertFalse(f.classify(CursorUsageFetcher.UsageAPIError(status: 500, body: "")).permanent)
+        XCTAssertEqual(f.classify(CursorUsageFetcher.NoCredentialsError()),
+                       "Not signed in to Cursor (no Keychain token)")
+        XCTAssertEqual(f.classify(CursorUsageFetcher.MalformedTokenError()),
+                       "Cursor token wasn't a readable JWT")
+        XCTAssertTrue(f.classify(CursorUsageFetcher.UnsupportedResponseError(body: "<html>")).contains("not supported"))
+        XCTAssertEqual(f.classify(CursorUsageFetcher.UsageAPIError(status: 500, body: "")),
+                       "Cursor usage API returned 500")
     }
 }

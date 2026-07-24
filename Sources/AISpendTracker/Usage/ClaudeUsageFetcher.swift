@@ -18,11 +18,12 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
     private static let userAgent = "claude-code/2.1.47"
     private static let timeout: TimeInterval = 5
 
-    /// No OAuth credentials exist (item not found) — an API-key account rather than
-    /// a Claude.ai subscription. Polling should stop permanently.
+    /// No OAuth credentials found — either an API-key account (no Claude.ai
+    /// subscription) or the credential item read as absent while Claude Code was
+    /// rewriting it. Reported to the user; the poller retries next cooldown.
     struct NoOAuthCredentialsError: Error {}
-    /// `security` failed for a transient reason (keychain locked, prompt dismissed,
-    /// etc.) — worth retrying. `detail` carries the tool's stderr.
+    /// `security` failed for another reason (keychain locked, prompt dismissed,
+    /// etc.). `detail` carries the tool's stderr.
     struct KeychainError: Error { let detail: String }
     /// The usage endpoint returned a non-2xx status.
     struct UsageAPIError: Error, RawResponseCarrying {
@@ -75,22 +76,22 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
         }
     }
 
-    func classify(_ error: Error) -> (message: String, permanent: Bool) {
+    func classify(_ error: Error) -> String {
         switch error {
         case let e as ResponseParseError:
             return classify(e.underlying)
         case is NoOAuthCredentialsError:
-            return ("No Claude subscription credentials in Keychain (API-key account?)", true)
+            return "No Claude subscription credentials in Keychain (API-key account?)"
         case let e as KeychainError:
-            return ("Keychain read failed: \(e.detail)", false)
+            return "Keychain read failed: \(e.detail)"
         case let e as UsageAPIError:
-            return (e.userMessage, false)
+            return e.userMessage
         case let e as URLError:
-            return ("Network error: \(e.localizedDescription)", false)
+            return "Network error: \(e.localizedDescription)"
         case is DecodingError:
-            return ("Couldn't parse the usage response", false)
+            return "Couldn't parse the usage response"
         default:
-            return ("Fetch failed: \(error.localizedDescription)", false)
+            return "Fetch failed: \(error.localizedDescription)"
         }
     }
 

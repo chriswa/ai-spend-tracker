@@ -6,6 +6,14 @@ import Foundation
 /// the cooldown has already elapsed; otherwise it waits out the remainder. After
 /// every attempt (success or failure) it schedules the next one a full cooldown
 /// later, so the API is never hit more than once per `cooldown`.
+///
+/// A fetch failure never stops polling — it just shows the error and retries on the
+/// next cooldown. A single error can't be trusted as a terminal verdict: a "no
+/// credentials" read can be a genuinely absent credential *or* a transient blip
+/// while the tool rewrites it mid-rotation, and the two are indistinguishable in
+/// isolation. Retrying is cheap (a failed read is local and fast) and self-heals
+/// the moment the credential reappears, so the poller only stops when explicitly
+/// told to (`stop()`, when a provider is disabled).
 @MainActor
 final class UsagePoller {
     private let provider: UsageProvider
@@ -35,7 +43,10 @@ final class UsagePoller {
     }
 
     /// Force an immediate fetch (the menu's "Refresh Now"), bypassing the cooldown.
+    /// Clears `stopped` so an explicit user retry always attempts, even if the poller
+    /// was previously stopped.
     func fetchNow() {
+        stopped = false
         fetch()
     }
 
@@ -44,6 +55,10 @@ final class UsagePoller {
         timer?.invalidate()
         timer = nil
     }
+
+    /// Whether polling is stopped (only via `stop()`, when the provider is disabled).
+    /// Exposed for tests; `fetchNow()` clears it.
+    var isStopped: Bool { stopped }
 
     /// Schedule the next fetch: now if the cooldown has elapsed since the last
     /// attempt, else after the remainder.
@@ -76,10 +91,10 @@ final class UsagePoller {
                 self?.onData?(result.snapshot, result.raw)
                 self?.scheduleAfterAttempt()
             } catch {
-                let (message, permanent) = provider.classify(error)
-                Log.log("usage[\(provider.id.rawValue)]: fetch failed (\(permanent ? "permanent" : "will retry")): \(error)")
+                let message = provider.classify(error)
+                Log.log("usage[\(provider.id.rawValue)]: fetch failed (will retry): \(error)")
                 self?.onError?(message, (error as? RawResponseCarrying)?.rawResponse)
-                if permanent { self?.stop() } else { self?.scheduleAfterAttempt() }
+                self?.scheduleAfterAttempt()
             }
         }
     }

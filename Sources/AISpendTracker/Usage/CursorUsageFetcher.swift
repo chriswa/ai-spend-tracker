@@ -72,26 +72,26 @@ final class CursorUsageFetcher: UsageProvider, @unchecked Sendable {
         }
     }
 
-    func classify(_ error: Error) -> (message: String, permanent: Bool) {
+    func classify(_ error: Error) -> String {
         switch error {
         case let e as ResponseParseError:
             return classify(e.underlying)
         case is NoCredentialsError:
-            return ("Not signed in to Cursor (no Keychain token)", true)
+            return "Not signed in to Cursor (no Keychain token)"
         case is MalformedTokenError:
-            return ("Cursor token wasn't a readable JWT", true)
+            return "Cursor token wasn't a readable JWT"
         case is UnsupportedResponseError:
-            return ("Cursor account type not supported yet — copy this error and share it", false)
+            return "Cursor account type not supported yet — copy this error and share it"
         case let e as KeychainError:
-            return ("Keychain read failed: \(e.detail)", false)
+            return "Keychain read failed: \(e.detail)"
         case let e as UsageAPIError:
-            return ("Cursor usage API returned \(e.status)", false)
+            return "Cursor usage API returned \(e.status)"
         case let e as URLError:
-            return ("Network error: \(e.localizedDescription)", false)
+            return "Network error: \(e.localizedDescription)"
         case is DecodingError:
-            return ("Couldn't parse the Cursor usage response", false)
+            return "Couldn't parse the Cursor usage response"
         default:
-            return ("Fetch failed: \(error.localizedDescription)", false)
+            return "Fetch failed: \(error.localizedDescription)"
         }
     }
 

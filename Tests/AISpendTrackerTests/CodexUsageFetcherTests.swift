@@ -117,8 +117,11 @@ final class CodexUsageFetcherTests: XCTestCase {
 
     func testClassify() {
         let f = CodexUsageFetcher()
-        XCTAssertTrue(f.classify(CodexUsageFetcher.NoAuthError()).permanent)
-        XCTAssertFalse(f.classify(CodexUsageFetcher.UsageAPIError(status: 401, body: "")).permanent)
-        XCTAssertFalse(f.classify(CodexUsageFetcher.UsageAPIError(status: 500, body: "")).permanent)
+        XCTAssertEqual(f.classify(CodexUsageFetcher.NoAuthError()),
+                       "Not logged in to Codex (~/.codex/auth.json missing)")
+        XCTAssertEqual(f.classify(CodexUsageFetcher.UsageAPIError(status: 401, body: "")),
+                       "Codex token expired — open Codex to refresh it")
+        XCTAssertEqual(f.classify(CodexUsageFetcher.UsageAPIError(status: 500, body: "")),
+                       "Codex usage API returned 500")
     }
 }

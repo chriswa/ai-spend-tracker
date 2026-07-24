@@ -5,8 +5,8 @@ import Foundation
 /// Cursor credentials) have ACLs that trust `/usr/bin/security`, so no interactive
 /// prompt appears. Shared by the providers that authenticate from the Keychain.
 enum Keychain {
-    /// The item genuinely doesn't exist (errSecItemNotFound). Callers treat this as
-    /// permanent — the tool isn't set up on this machine.
+    /// The item doesn't exist (errSecItemNotFound) — either the tool isn't set up on
+    /// this machine, or the item is momentarily absent while the tool rewrites it.
     struct ItemNotFound: Error {}
     /// A transient failure (locked keychain, denied prompt, …). `detail` is stderr.
     struct AccessError: Error { let detail: String }
