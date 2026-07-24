@@ -36,16 +36,14 @@ import Foundation
 ///      failure modes below, and immune to downward *corrections* (a refund leaves the
 ///      cycle key unchanged, so we just let `monthSpend` dip, clamped at ≥0).
 ///   2. **By value drop** — the raw reading plunged. The ONLY signal available for a
-///      provider with no reset timestamp (Claude). Two known limitations, both surfaced
-///      as low-confidence rather than silently trusted:
-///        • *Masked reset*: if we are offline across the reset and the new cycle climbs
-///          back near the old value before our next sample, we never see the dip. We
-///          flag any large sample gap on a timestamp-less provider for this reason.
-///        • *Correction vs reset*: a small dip is probably a refund/correction, not a
-///          reset. A true monthly reset zeroes the counter, so we require a plunge below
-///          `resetDropFraction` of the prior reading before treating a drop as a reset —
-///          otherwise a $100→$99 correction would bank $100 into `completed` and then
-///          re-add the $99, roughly doubling the figure.
+///      provider with no reset timestamp (Claude). A small dip is probably a
+///      refund/correction, not a reset. A true monthly reset zeroes the counter, so we
+///      require a plunge below `resetDropFraction` of the prior reading before treating
+///      a drop as a reset — otherwise a $100→$99 correction would bank $100 into
+///      `completed` and then re-add the $99, roughly doubling the figure. A reset that
+///      happens while the app is offline and is followed by enough new spend to conceal
+///      the drop is inherently undetectable; it can understate the total, but a routine
+///      offline gap is not itself evidence of an incorrect figure.
 ///
 /// ## Accepted inaccuracy
 ///
@@ -99,9 +97,8 @@ final class SpendLedger {
         var monthSpendCents: Double { completedCents + max(0, rawProviderCents - carryInCents) }
     }
 
-    /// A sample gap beyond this means we may have been asleep/quit across an event we
-    /// cannot recover from a cumulative counter alone (a month boundary, or — on a
-    /// provider with no reset timestamp — a hidden cycle reset). ~6× the 5-minute poll.
+    /// A sample gap beyond this means the carry-in captured at a local calendar-month
+    /// boundary may be stale. ~6× the 5-minute poll.
     nonisolated static let offlineGapThreshold: TimeInterval = 30 * 60
 
     /// For a timestamp-less provider (Claude): a monthly reset zeroes the counter, so
@@ -117,8 +114,19 @@ final class SpendLedger {
         self.fileURL = fileURL ?? AppPaths.applicationSupport.appendingPathComponent("spend-ledger.json")
         if let raw = try? Data(contentsOf: self.fileURL),
            let decoded = try? JSONDecoder().decode([String: Entry].self, from: raw) {
-            entries = Dictionary(uniqueKeysWithValues: decoded.compactMap { key, value in
-                ProviderID(rawValue: key).map { ($0, value) }
+            entries = Dictionary(uniqueKeysWithValues: decoded.compactMap { pair in
+                let key = pair.key
+                var value = pair.value
+                // Older versions marked any long Claude polling gap as uncertain. Those
+                // gaps are routine (for example, a sleeping laptop), so retire only that
+                // obsolete persisted warning while preserving every other uncertainty.
+                if Self.isRetiredMaskedResetWarning(value.monthUncertainReason) {
+                    value.monthUncertain = false
+                    value.monthUncertainReason = nil
+                    value.lowConfidence = false
+                    value.confidenceNote = nil
+                }
+                return ProviderID(rawValue: key).map { ($0, value) }
             })
         } else {
             entries = [:]
@@ -236,18 +244,14 @@ final class SpendLedger {
 
         // --- Case: normal update (same calendar month, no confirmed reset). ---
         // Plain growth — or a small dip we treat as a correction — is captured by the
-        // monthSpend formula directly; carryIn/completed are unchanged. Two things make it
-        // uncertain (flagged, not acted on): a long gap on a timestamp-less provider, where
-        // a reset could be hidden; or a timestamp that advanced without a matching value
-        // drop (see above). A long gap on a timestamped provider is safe — any real reset
-        // would have surfaced as a value drop + cycle change and been confirmed above.
-        let maskedResetRisk = offline && !hasTimestamp
-        let thisLow = maskedResetRisk || cycleAdvancedWithoutDrop
+        // monthSpend formula directly; carryIn/completed are unchanged. A long gap alone
+        // is not a warning: a hidden timestamp-less reset can only be inferred from a
+        // later drop, and normal sleep should not permanently taint the month. A provider
+        // timestamp advancing without a matching value drop remains genuinely ambiguous.
+        let thisLow = cycleAdvancedWithoutDrop
         let note: String?
         if cycleAdvancedWithoutDrop {
             note = "Provider signaled a new cycle but its spend didn't drop; not reconciled — the total may be off."
-        } else if maskedResetRisk {
-            note = "Offline \(gapText); a reset could have gone unseen (no reset time from this provider)."
         } else {
             note = nil
         }
@@ -260,6 +264,13 @@ final class SpendLedger {
                      lowConfidence: thisLow, confidenceNote: note,
                      monthUncertain: prior.isMonthUncertain || thisLow,
                      monthUncertainReason: thisLow ? note : prior.monthUncertainReason)
+    }
+
+    /// Recognizes the persisted warning emitted by versions that treated every long
+    /// timestamp-less gap as evidence of a concealed reset. It is intentionally narrow
+    /// so migrations never clear a warning caused by an observed event.
+    private static func isRetiredMaskedResetWarning(_ note: String?) -> Bool {
+        note?.hasSuffix("a reset could have gone unseen (no reset time from this provider).") == true
     }
 
     /// Local-calendar-month bucket key, e.g. "2026-07". LOCAL by design — the whole point

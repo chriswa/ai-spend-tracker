@@ -153,10 +153,11 @@ final class SpendLedgerTests: XCTestCase {
         XCTAssertNotNil(s2.confidenceNote)
     }
 
-    func testTimestamplessLongGapFlagsMaskedResetRisk() {
+    func testTimestamplessLongGapWithoutObservedDropIsConfident() {
         let s1 = reconstruct(nil, raw: 100, resets: nil, now: date(2026, 7, 10, 12))
         let s2 = reconstruct(s1, raw: 100, resets: nil, now: date(2026, 7, 10, 13))   // 1h gap, no visible drop
-        XCTAssertTrue(s2.lowConfidence)
+        XCTAssertFalse(s2.lowConfidence)
+        XCTAssertFalse(s2.isMonthUncertain)
         XCTAssertEqual(s2.monthSpendCents, 100)
     }
 
