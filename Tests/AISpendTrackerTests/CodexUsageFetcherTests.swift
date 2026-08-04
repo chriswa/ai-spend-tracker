@@ -119,9 +119,188 @@ final class CodexUsageFetcherTests: XCTestCase {
         let f = CodexUsageFetcher()
         XCTAssertEqual(f.classify(CodexUsageFetcher.NoAuthError()),
                        "Not logged in to Codex (~/.codex/auth.json missing)")
+        // A 401 only reaches the user after a refresh already succeeded, so it reads as
+        // an authorization problem rather than a stale token.
         XCTAssertEqual(f.classify(CodexUsageFetcher.UsageAPIError(status: 401, body: "")),
-                       "Codex token expired — open Codex to refresh it")
+                       "Codex rejected our sign-in — run `codex login` again")
         XCTAssertEqual(f.classify(CodexUsageFetcher.UsageAPIError(status: 500, body: "")),
                        "Codex usage API returned 500")
+        XCTAssertEqual(f.classify(CodexUsageFetcher.TokenRefreshError(
+                            detail: "no codex CLI found to refresh it", expiredResponse: "HTTP 401")),
+                       "Codex token expired — no codex CLI found to refresh it")
+    }
+
+    /// A failed refresh keeps the 401 body reachable for "copy last response", so the
+    /// user can still see what the API actually said.
+    func testTokenRefreshErrorCarriesTheExpiredResponse() {
+        let e = CodexUsageFetcher.TokenRefreshError(detail: "boom", expiredResponse: "HTTP 401\n{}")
+        XCTAssertTrue(e.rawResponse.contains("boom"))
+        XCTAssertTrue(e.rawResponse.contains("HTTP 401"))
+    }
+
+    // MARK: - 401 → refresh → retry
+
+    /// A missing/empty auth file short-circuits before any network call, so these tests
+    /// exercise the refresh wiring without touching the real endpoint.
+    private func tempAuth(_ contents: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-auth-\(UUID().uuidString).json")
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    private static let validAuth = #"{"tokens":{"access_token":"t","account_id":"acct"}}"#
+
+    /// Canned HTTP replies, consumed in order, so a test can script "401 then 200".
+    private static func transport(_ statuses: [Int], body: String = "{}")
+        -> (CodexUsageFetcher.Transport, Counter) {
+        let remaining = Queue(statuses)
+        let requests = Counter()
+        let transport: CodexUsageFetcher.Transport = { req in
+            await requests.increment()
+            let status = await remaining.next() ?? 200
+            let response = HTTPURLResponse(url: req.url!, statusCode: status,
+                                           httpVersion: nil, headerFields: nil)!
+            return (Data(body.utf8), response)
+        }
+        return (transport, requests)
+    }
+
+    /// The headline behaviour: a 401 hands the refresh to the CLI and retries exactly
+    /// once, so the fetch succeeds without the user touching anything.
+    func testExpiredTokenRefreshesThenRetriesOnce() async throws {
+        let refreshes = Counter()
+        let (transport, requests) = Self.transport([401, 200])
+        let f = CodexUsageFetcher(authPath: try tempAuth(Self.validAuth),
+                                  refreshAuth: { await refreshes.increment() },
+                                  transport: transport)
+
+        let result = try await f.fetch()
+
+        let (refreshCount, requestCount) = (await refreshes.count, await requests.count)
+        XCTAssertTrue(result.snapshot.windows.isEmpty)      // "{}" decodes to an empty snapshot
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertEqual(requestCount, 2)                     // the 401 plus one retry
+    }
+
+    /// A 401 that survives the refresh is reported as an authorization problem, and we
+    /// stop after one retry rather than looping.
+    func testSecondUnauthorizedIsNotRetriedAgain() async throws {
+        let refreshes = Counter()
+        let (transport, requests) = Self.transport([401, 401])
+        let f = CodexUsageFetcher(authPath: try tempAuth(Self.validAuth),
+                                  refreshAuth: { await refreshes.increment() },
+                                  transport: transport)
+        do {
+            _ = try await f.fetch()
+            XCTFail("expected the second 401 to surface")
+        } catch let e as CodexUsageFetcher.UsageAPIError {
+            XCTAssertEqual(e.status, 401)
+            XCTAssertEqual(f.classify(e), "Codex rejected our sign-in — run `codex login` again")
+        }
+        let (refreshCount, requestCount) = (await refreshes.count, await requests.count)
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    /// When the CLI can't be found, the 401 surfaces as `TokenRefreshError` explaining
+    /// why — and we don't retry against a token we know is stale.
+    func testRefreshFailureSurfacesWhyAndSkipsTheRetry() async throws {
+        let (transport, requests) = Self.transport([401, 200])
+        let f = CodexUsageFetcher(authPath: try tempAuth(Self.validAuth),
+                                  refreshAuth: { throw CodexCLIAuth.CLINotFound() },
+                                  transport: transport)
+        do {
+            _ = try await f.fetch()
+            XCTFail("expected TokenRefreshError")
+        } catch let e as CodexUsageFetcher.TokenRefreshError {
+            XCTAssertEqual(f.classify(e), "Codex token expired — no codex CLI found to refresh it")
+        }
+        let requestCount = await requests.count
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    /// Non-401 failures never provoke a refresh — rotating the token wouldn't fix a 500.
+    func testServerErrorDoesNotTriggerRefresh() async throws {
+        let refreshes = Counter()
+        let (transport, requests) = Self.transport([500])
+        let f = CodexUsageFetcher(authPath: try tempAuth(Self.validAuth),
+                                  refreshAuth: { await refreshes.increment() },
+                                  transport: transport)
+        do {
+            _ = try await f.fetch()
+            XCTFail("expected UsageAPIError")
+        } catch let e as CodexUsageFetcher.UsageAPIError {
+            XCTAssertEqual(e.status, 500)
+        }
+        let (refreshCount, requestCount) = (await refreshes.count, await requests.count)
+        XCTAssertEqual(refreshCount, 0)
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    /// Two expiries inside the cooldown perform one token exchange, not two: the second
+    /// reports that a fresh refresh didn't help rather than rotating the token again.
+    func testRepeatedExpiryRefreshesOnlyOncePerCooldown() async throws {
+        let refreshes = Counter()
+        let (transport, _) = Self.transport([401, 401, 401, 401])
+        let f = CodexUsageFetcher(authPath: try tempAuth(Self.validAuth), refreshCooldown: 600,
+                                  refreshAuth: { await refreshes.increment() },
+                                  transport: transport)
+
+        _ = try? await f.fetch()
+        do {
+            _ = try await f.fetch()
+            XCTFail("expected the gate to block the second refresh")
+        } catch let e as CodexUsageFetcher.TokenRefreshError {
+            XCTAssertEqual(f.classify(e),
+                           "Codex token expired — refreshed moments ago and still unauthorized")
+        }
+        let refreshCount = await refreshes.count
+        XCTAssertEqual(refreshCount, 1)
+    }
+
+    /// No token on disk fails as `NoAuthError` and must *not* provoke a refresh — the
+    /// CLI can't fix a logged-out account, and refreshing rotates a token needlessly.
+    func testMissingTokenDoesNotTriggerRefresh() async throws {
+        let calls = Counter()
+        let f = CodexUsageFetcher(authPath: try tempAuth("{}"),
+                                  refreshAuth: { await calls.increment() },
+                                  transport: { _ in XCTFail("should not reach the network"); throw NoBody() })
+        do {
+            _ = try await f.fetch()
+            XCTFail("expected NoAuthError")
+        } catch is CodexUsageFetcher.NoAuthError {
+            // expected
+        }
+        let refreshCount = await calls.count
+        XCTAssertEqual(refreshCount, 0)
+    }
+
+    private struct NoBody: Error {}
+
+    /// The gate blocks a second refresh inside the cooldown, so a burst of failing
+    /// fetches performs one token exchange rather than one per attempt.
+    func testRefreshGateBlocksRepeatAttemptsWithinCooldown() async {
+        let gate = CodexUsageFetcher.RefreshGate(cooldown: 60)
+        let start = Date()
+        let first = await gate.claim(now: start)
+        let tooSoon = await gate.claim(now: start.addingTimeInterval(30))
+        let afterCooldown = await gate.claim(now: start.addingTimeInterval(61))
+        XCTAssertTrue(first)
+        XCTAssertFalse(tooSoon)
+        XCTAssertTrue(afterCooldown)
+    }
+
+    private actor Counter {
+        private(set) var count = 0
+        func increment() { count += 1 }
+    }
+
+    /// Scripted responses, popped in order.
+    private actor Queue {
+        private var items: [Int]
+        init(_ items: [Int]) { self.items = items }
+        func next() -> Int? { items.isEmpty ? nil : items.removeFirst() }
     }
 }

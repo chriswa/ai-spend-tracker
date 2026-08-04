@@ -2,11 +2,15 @@ import Foundation
 
 /// Live usage for OpenAI Codex CLI (ChatGPT-authenticated). Mirrors what the
 /// `codex` CLI's `/status` does:
-///   • read the bearer token + account id from `~/.codex/auth.json` (the CLI
-///     refreshes this file itself; we only read it — never write, to avoid racing
-///     the running CLI);
+///   • read the bearer token + account id from `~/.codex/auth.json` (never write it —
+///     see `CodexCLIAuth` for why the CLI must own that file);
 ///   • GET https://chatgpt.com/backend-api/wham/usage with the bearer token and the
 ///     ChatGPT-Account-Id header.
+///
+/// That access token lives about an hour and Codex only refreshes it when Codex
+/// itself runs, so a tray polling in the background routinely finds a stale one. On a
+/// 401 we hand the refresh to the CLI (`CodexCLIAuth`) and retry once, which keeps the
+/// tray self-healing without us ever touching the shared credential.
 ///
 /// The payload carries `rate_limit.primary_window` / `secondary_window` (on paid
 /// plans a 5-hour + weekly pair; on the free plan a single ~30-day window) plus
@@ -34,15 +38,78 @@ final class CodexUsageFetcher: UsageProvider, @unchecked Sendable {
         let status: Int; let body: String
         var rawResponse: String { "HTTP \(status)\n\(body)" }
     }
+    /// The token was expired and handing the refresh to the `codex` CLI didn't work.
+    /// Carries the 401 body too, so "copy last response" still shows what we saw.
+    struct TokenRefreshError: Error, RawResponseCarrying {
+        let detail: String
+        let expiredResponse: String
+        var rawResponse: String { "token refresh failed: \(detail)\n\n\(expiredResponse)" }
+    }
+
+    /// Refreshing rotates the refresh token, so overlapping refreshes can invalidate
+    /// each other. `refreshGate` serializes ours and spaces them out — a 401 that
+    /// survives a *fresh* refresh means the account needs a re-login, and hammering
+    /// the token endpoint (e.g. by mashing "Refresh Now") won't fix it.
+    private static let refreshCooldown: TimeInterval = 60
+
+    /// Issues one HTTP request. Injected so tests can drive the retry path.
+    typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
     private let authPath: URL
+    /// Performs the refresh. Injected so tests can drive the retry path without
+    /// spawning a process.
+    private let refreshAuth: @Sendable () async throws -> Void
+    private let transport: Transport
+    private let refreshGate: RefreshGate
 
-    init(authPath: URL? = nil) {
+    init(authPath: URL? = nil,
+         refreshCooldown: TimeInterval = CodexUsageFetcher.refreshCooldown,
+         refreshAuth: (@Sendable () async throws -> Void)? = nil,
+         transport: Transport? = nil) {
         self.authPath = authPath
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
+        self.refreshAuth = refreshAuth ?? { try await CodexCLIAuth.refreshToken() }
+        self.transport = transport ?? { try await URLSession.shared.data(for: $0) }
+        self.refreshGate = RefreshGate(cooldown: refreshCooldown)
     }
 
     func fetch() async throws -> FetchResult {
+        do {
+            return try await fetchUsage()
+        } catch let expired as UsageAPIError where expired.status == 401 {
+            try await refresh(after: expired)
+            // Re-reads auth.json, which the CLI has just rewritten. Exactly one retry:
+            // a second 401 is an authorization problem, not a stale token.
+            return try await fetchUsage()
+        }
+    }
+
+    /// Ask the CLI to refresh. Throws `TokenRefreshError` if it can't, so the 401 is
+    /// reported as "couldn't auto-refresh" rather than a bare expiry.
+    private func refresh(after expired: UsageAPIError) async throws {
+        guard await refreshGate.claim() else {
+            throw TokenRefreshError(detail: "refreshed moments ago and still unauthorized",
+                                    expiredResponse: expired.rawResponse)
+        }
+        do {
+            try await refreshAuth()
+            Log.log("usage[codex]: token expired — refreshed via the codex CLI, retrying")
+        } catch {
+            throw TokenRefreshError(detail: Self.describe(refreshFailure: error),
+                                    expiredResponse: expired.rawResponse)
+        }
+    }
+
+    private static func describe(refreshFailure error: Error) -> String {
+        switch error {
+        case is CodexCLIAuth.CLINotFound: return "no codex CLI found to refresh it"
+        case let e as CodexCLIAuth.RefreshFailed: return e.detail
+        default: return error.localizedDescription
+        }
+    }
+
+    /// One request to the usage endpoint with whatever token is on disk right now.
+    private func fetchUsage() async throws -> FetchResult {
         let (token, accountId) = try readAuth()
 
         var req = URLRequest(url: Self.usageURL, timeoutInterval: Self.timeout)
@@ -52,7 +119,7 @@ final class CodexUsageFetcher: UsageProvider, @unchecked Sendable {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await transport(req)
         let raw = String(data: data, encoding: .utf8) ?? ""
         guard let http = response as? HTTPURLResponse else {
             throw UsageAPIError(status: -1, body: "no HTTP response")
@@ -73,8 +140,11 @@ final class CodexUsageFetcher: UsageProvider, @unchecked Sendable {
             return classify(e.underlying)
         case is NoAuthError:
             return "Not logged in to Codex (~/.codex/auth.json missing)"
+        case let e as TokenRefreshError:
+            return "Codex token expired — \(e.detail)"
         case let e as UsageAPIError where e.status == 401:
-            return "Codex token expired — open Codex to refresh it"
+            // Only reachable after a successful refresh, so the token isn't the problem.
+            return "Codex rejected our sign-in — run `codex login` again"
         case let e as UsageAPIError:
             return "Codex usage API returned \(e.status)"
         case let e as URLError:
@@ -87,6 +157,22 @@ final class CodexUsageFetcher: UsageProvider, @unchecked Sendable {
     }
 
     // MARK: - Auth
+
+    /// Serializes refresh attempts and enforces a minimum gap between them, so
+    /// concurrent or rapid-fire fetches can't stack up token exchanges.
+    actor RefreshGate {
+        private let cooldown: TimeInterval
+        private var lastAttempt: Date?
+
+        init(cooldown: TimeInterval) { self.cooldown = cooldown }
+
+        /// `true` if the caller may refresh now; `false` if one just happened.
+        func claim(now: Date = Date()) -> Bool {
+            if let last = lastAttempt, now.timeIntervalSince(last) < cooldown { return false }
+            lastAttempt = now
+            return true
+        }
+    }
 
     private func readAuth() throws -> (token: String, accountId: String) {
         guard let raw = try? Data(contentsOf: authPath),
