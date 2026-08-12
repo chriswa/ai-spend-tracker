@@ -88,6 +88,18 @@ struct MockProvider: UsageProvider {
                                 timeBasis: .interval(start: start, end: end)),
                 ],
                 spend: SpendInfo(usedCents: 4200, apiLimitCents: 150000, label: "Cursor on-demand"))
+        case .devin:
+            displayName = "Devin"
+            let dailyReset = calendar.date(byAdding: .hour, value: 11, to: now) ?? now
+            let weeklyReset = calendar.date(byAdding: .day, value: 4, to: now) ?? now
+            snapshot = ProviderSnapshot(
+                windows: [
+                    UsageWindow(caption: "Daily", utilization: 6, resetsAt: dailyReset,
+                                timeBasis: .rollingWindow(length: 24 * 60 * 60)),
+                    UsageWindow(caption: "Weekly", utilization: 3, resetsAt: weeklyReset,
+                                timeBasis: .rollingWindow(length: WindowLength.sevenDay)),
+                ],
+                spend: SpendInfo(usedCents: 1761, apiLimitCents: nil, label: "Devin on-demand"))
         }
     }
 

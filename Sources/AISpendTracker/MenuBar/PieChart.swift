@@ -23,12 +23,16 @@ enum PieChart {
     struct Palette { let usage: NSColor; let time: NSColor; let over: NSColor }
 
     /// Per-provider palette: usage ring in the brand color, time wedge at 50%
-    /// brightness. Claude #D97757, Codex #3D93D6, Cursor #AC7CE0.
+    /// brightness. Claude #D97757, Codex #3D93D6, Cursor #AC7CE0, Devin #D63D6E.
+    /// Devin's raspberry sits in the open rose/magenta gap — kept well clear of the
+    /// spend green (a different category, real money) and maximally separated from the
+    /// other provider hues.
     static func palette(for id: ProviderID) -> Palette {
         switch id {
         case .claude: return make(217, 119, 87)
         case .codex:  return make(61, 147, 214)
         case .cursor: return make(172, 124, 224)
+        case .devin:  return make(214, 61, 110)
         }
     }
     /// Combined spend pie: a green usage ring (#34C759 — matched in perceived brightness

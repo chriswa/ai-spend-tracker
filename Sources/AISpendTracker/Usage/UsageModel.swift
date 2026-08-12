@@ -4,7 +4,7 @@ import Foundation
 /// (cache/history filenames, enabled-set storage) so it must stay stable.
 /// `CaseIterable` order is the canonical left-to-right pie/section order.
 enum ProviderID: String, CaseIterable, Codable {
-    case claude, codex, cursor
+    case claude, codex, cursor, devin
 }
 
 /// How a window's elapsed-time wedge (the gray/dark pie layer) is computed.

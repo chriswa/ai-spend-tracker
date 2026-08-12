@@ -31,7 +31,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     /// Human names for every provider (the submenu lists all, enabled or not).
     private static let displayNames: [ProviderID: String] = [
-        .claude: "Claude", .codex: "Codex", .cursor: "Cursor",
+        .claude: "Claude", .codex: "Codex", .cursor: "Cursor", .devin: "Devin",
     ]
 
     override init() {

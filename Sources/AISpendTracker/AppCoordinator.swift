@@ -56,6 +56,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         case .claude: return ClaudeUsageFetcher()
         case .codex:  return CodexUsageFetcher()
         case .cursor: return CursorUsageFetcher()
+        case .devin:  return DevinUsageFetcher()
         }
     }
 
