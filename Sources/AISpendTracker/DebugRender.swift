@@ -52,15 +52,25 @@ enum DebugRender {
                 ], spend: SpendInfo(usedCents: 12345, apiLimitCents: 50000, label: "Claude extra usage")),
                 lastUpdated: now0)
 
-            // Draw the actual tray image scaled up so we see the true menu-bar look.
-            let tray = PieChart.trayImage(from: TrayViewModel(providers: [claude], customLimitCents: 250000), now: now0)
+            // Draw the actual tray image scaled up so we see the true menu-bar look, in
+            // the default ring style.
+            let tray = TrayRings.trayImage(from: TrayViewModel(providers: [claude], customLimitCents: 250000), now: now0)
             let scale: CGFloat = 5
             let tw = tray.size.width * scale, th = tray.size.height * scale
             tray.draw(in: NSRect(x: 20, y: 20, width: tw, height: th),
                       from: .zero, operation: .sourceOver, fraction: 1)
-            drawLabel("actual tray image ×5", centeredIn: NSRect(x: 20, y: 20 + th, width: tw, height: 20))
+            drawLabel("actual tray rings ×5", centeredIn: NSRect(x: 20, y: 20 + th, width: tw, height: 20))
 
-            // Multi-provider tray with one errored provider (Codex) + a Cursor window.
+            // A full house: every provider enabled (Claude with a scoped third window,
+            // Devin with two, Codex errored) plus the spend bar — the layout that has to
+            // stay narrow, and where the wider provider-boundary gaps must read.
+            let claudeFull = ProviderView(id: .claude, displayName: "Claude",
+                snapshot: ProviderSnapshot(windows: (claude.snapshot?.windows ?? []) + [
+                    UsageWindow(caption: "Fable 7-Day", utilization: 61,
+                                resetsAt: now0.addingTimeInterval(3 * 24 * 3600),
+                                timeBasis: .rollingWindow(length: WindowLength.sevenDay), isScoped: true),
+                ], spend: claude.snapshot?.spend),
+                lastUpdated: now0)
             let codexErr = ProviderView(id: .codex, displayName: "Codex", error: "Codex token expired")
             let cursor = ProviderView(id: .cursor, displayName: "Cursor",
                 snapshot: ProviderSnapshot(windows: [
@@ -68,13 +78,22 @@ enum DebugRender {
                                 timeBasis: .interval(start: monthStart, end: monthEnd)),
                 ], spend: SpendInfo(usedCents: 4200, apiLimitCents: 150000, label: "Cursor on-demand")),
                 lastUpdated: now0)
-            let errTray = PieChart.trayImage(
-                from: TrayViewModel(providers: [claude, codexErr, cursor], customLimitCents: 30000), now: now0)
+            let devin = ProviderView(id: .devin, displayName: "Devin",
+                snapshot: ProviderSnapshot(windows: [
+                    UsageWindow(caption: "Daily", utilization: 104, resetsAt: now0.addingTimeInterval(9 * 3600),
+                                timeBasis: .rollingWindow(length: 24 * 3600)),
+                    UsageWindow(caption: "Weekly", utilization: 33, resetsAt: now0.addingTimeInterval(3 * 24 * 3600),
+                                timeBasis: .rollingWindow(length: WindowLength.sevenDay)),
+                ]),
+                lastUpdated: now0)
+            let errTray = TrayBars.trayImage(
+                from: TrayViewModel(providers: [claudeFull, codexErr, cursor, devin], customLimitCents: 30000),
+                now: now0)
             let ew = errTray.size.width * scale, eh = errTray.size.height * scale
             let ex = 20 + tw + 40
             errTray.draw(in: NSRect(x: ex, y: 20, width: ew, height: eh),
                          from: .zero, operation: .sourceOver, fraction: 1)
-            drawLabel("error + custom limit ×5", centeredIn: NSRect(x: ex, y: 20 + eh, width: ew, height: 20))
+            drawLabel("all providers + error, bars ×5", centeredIn: NSRect(x: ex, y: 20 + eh, width: ew, height: 20))
 
             // Sparkline preview over a fixed 2-hour axis ending "now": an older
             // cluster, a gap (missed samples → broken line), then a recent cluster
@@ -94,19 +113,21 @@ enum DebugRender {
             drawLabel("usage-rate sparkline (fixed 2h axis, gaps left blank)",
                       centeredIn: NSRect(x: 40, y: height - 78, width: 360, height: 20))
 
-            // Light-mode tray check: the same pies with a black hairline over a light
-            // bar, so the adaptive outline reads next to the dark-backed trays above.
+            // Light-mode tray check: the same bars over a light bar, so their weight
+            // against a pale menu bar reads next to the dark-backed trays above.
             let lightBar = NSRect(x: 440, y: height - 66, width: 300, height: 40)
             NSColor(white: 0.92, alpha: 1).setFill()
             NSBezierPath(roundedRect: lightBar, xRadius: 6, yRadius: 6).fill()
-            let lightTray = PieChart.trayImage(from: TrayViewModel(providers: [claude], customLimitCents: 250000),
-                                               now: now0, outline: PieChart.outline(forDark: false))
+            // Rings are the style whose hairline adapts to the backdrop, so they are what
+            // this check needs to draw.
+            let lightTray = TrayRings.trayImage(from: TrayViewModel(providers: [claude], customLimitCents: 250000),
+                                                now: now0, outline: PieChart.outline(forDark: false))
             let ls: CGFloat = 3
             lightTray.draw(in: NSRect(x: lightBar.minX + 10,
                                       y: lightBar.minY + (lightBar.height - lightTray.size.height * ls) / 2,
                                       width: lightTray.size.width * ls, height: lightTray.size.height * ls),
                            from: .zero, operation: .sourceOver, fraction: 1)
-            drawLabel("light-mode tray (black hairline)",
+            drawLabel("light-mode rings (black hairline)",
                       centeredIn: NSRect(x: 440, y: height - 86, width: 300, height: 20))
             return true
         }

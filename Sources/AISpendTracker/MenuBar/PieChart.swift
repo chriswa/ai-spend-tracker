@@ -1,7 +1,9 @@
 import AppKit
 
-/// Renders usage into circles composited side by side into the single status-item
-/// image, and into the dropdown header via the same `Circle` list. Each provider
+/// Builds the ordered `Circle` list that drives both the status-item image and the
+/// dropdown header, and draws the circle form of one. The header always draws rings;
+/// the tray lays the same list out as rings or bars per `TrayStyle` (see `TrayRings`
+/// and `TrayBars`). Each provider
 /// contributes its window pies, in `ProviderID` order, followed by the combined spend
 /// pie. A provider whose latest fetch failed renders per the caller's `ErrorStyle`:
 /// the tray shows one compact warning glyph, while the header keeps its last good pies
@@ -75,21 +77,20 @@ enum PieChart {
     static let outline = NSColor(white: 1, alpha: 0.5)
 
     /// Hairline color for a given backdrop: white on dark, black on light — a faint
-    /// separator either way. The tray picks this from the menu bar's appearance.
+    /// separator either way. Ring tray images pick this from the menu bar's appearance,
+    /// since a ring's hairline lies against the bar; a bar's frame sits on its own black
+    /// backing and needs no such adaptation.
     static func outline(forDark isDark: Bool) -> NSColor {
         NSColor(white: isDark ? 1 : 0, alpha: 0.5)
     }
+
     /// Thickness of the solid black rim around each pie, as a fraction of the radius
     /// (with an absolute floor). The rim vanishes into a dark background but separates
     /// the pie from a pale menu in light mode. Used by the menu rings, not the tray.
     static let borderRatio: CGFloat = 0.12
     static let borderMinWidth: CGFloat = 1
 
-    // Geometry (points). The circle diameter tracks the live menu-bar height so the
-    // tray icon fills it like other status items, rather than sitting small in the bar.
-    // A ~4pt margin keeps the outline off the bar edges; the floor guards odd values.
-    static var diameter: CGFloat { max(15, NSStatusBar.system.thickness - 4) }
-    static let gap: CGFloat = 5
+    // Geometry (points).
     static let outlineWidth: CGFloat = 0.5
     /// Inner edge of the usage ring, as a fraction of the pie radius (so the ring band
     /// is the outer 1/3 of the radius).
@@ -98,11 +99,6 @@ enum PieChart {
     /// the pie), as a fraction of the pie radius. Kept well under the usage lane's 1/3
     /// so the usage color still shows through inside it.
     static let fullRingWidthRatio: CGFloat = 1.0 / 16.0
-
-    static func size(circles: Int) -> NSSize {
-        let n = max(1, circles)   // always at least one slot so the tray item is clickable
-        return NSSize(width: CGFloat(n) * diameter + CGFloat(n - 1) * gap, height: diameter + 2)
-    }
 
     /// One circle: either a two-layer pie or a warning glyph (failed provider). The
     /// single source of truth shared by the tray image and the dropdown header, so
@@ -151,6 +147,12 @@ enum PieChart {
         /// dropdown header flags such columns with a ⚠︎ so the staleness is unmistakable;
         /// the tray never emits these (it keeps the compact error glyph). Header-only.
         var isStale: Bool
+        /// Whether this circle opens a new group — the first of a provider's windows, or
+        /// the combined spend circle. Set here, at the one place that knows which provider
+        /// each circle came from, so the tray can widen the gap at provider boundaries
+        /// without re-deriving ownership from captions. Tray-only; the header spaces its
+        /// columns evenly.
+        var startsGroup: Bool
 
         init(kind: Kind, rawResponse: String? = nil, heading: String? = nil, caption: String,
              usageColor: NSColor, timeColor: NSColor, overColor: NSColor = .white,
@@ -158,7 +160,7 @@ enum PieChart {
              spark: [(Date, Double)] = [],
              resetsAt: Date? = nil, lastUpdated: Date? = nil,
              pieTooltip: String? = nil, sparkTooltip: String? = nil,
-             isStale: Bool = false) {
+             isStale: Bool = false, startsGroup: Bool = false) {
             self.kind = kind
             self.rawResponse = rawResponse
             self.heading = heading
@@ -173,6 +175,7 @@ enum PieChart {
             self.pieTooltip = pieTooltip
             self.sparkTooltip = sparkTooltip
             self.isStale = isStale
+            self.startsGroup = startsGroup
         }
     }
 
@@ -207,7 +210,8 @@ enum PieChart {
             } else if p.error != nil {
                 out.append(Circle(kind: .error, rawResponse: p.lastRawResponse,
                                   heading: p.displayName, caption: "unavailable",
-                                  usageColor: pal.usage, timeColor: pal.time, lastUpdated: p.lastUpdated))
+                                  usageColor: pal.usage, timeColor: pal.time, lastUpdated: p.lastUpdated,
+                                  startsGroup: true))
             } else if let snap = p.snapshot {
                 out += windowCircles(for: p, snapshot: snap, providerPalette: pal, now: now, stale: false)
             }
@@ -228,7 +232,8 @@ enum PieChart {
                 spark: vm.spendSeries,
                 resetsAt: UsageMath.monthResetDate(now: now),
                 lastUpdated: vm.latestUpdate,
-                sparkTooltip: UsageMath.recentPeakText(vm.spendSeries, unit: .dollars)))
+                sparkTooltip: UsageMath.recentPeakText(vm.spendSeries, unit: .dollars),
+                startsGroup: true))
         }
         return out
     }
@@ -240,7 +245,7 @@ enum PieChart {
     private static func windowCircles(for p: ProviderView, snapshot snap: ProviderSnapshot,
                                       providerPalette pal: Palette, now: Date, stale: Bool) -> [Circle] {
         let at = p.lastUpdated ?? now
-        return snap.windows.map { w in
+        return snap.windows.enumerated().map { i, w in
             let series = p.series(forWindow: w.caption)
             let base = w.isScoped ? scopedPalette : pal
             let wpal = stale ? dimmed(base) : base
@@ -254,37 +259,12 @@ enum PieChart {
                 lastUpdated: p.lastUpdated,
                 pieTooltip: UsageMath.projectedText(w, now: at),
                 sparkTooltip: UsageMath.recentPeakText(series, unit: .percent),
-                isStale: stale)
+                isStale: stale, startsGroup: i == 0)
         }
     }
 
-    /// Compose the circles into one status-item image. `outline` is the hairline color
-    /// for the current menu-bar appearance (white on dark, black on light).
-    static func trayImage(from vm: TrayViewModel, now: Date = Date(), outline: NSColor = Self.outline) -> NSImage {
-        image(circles: circles(from: vm, now: now), outline: outline)
-    }
-
-    static func image(circles: [Circle], outline: NSColor = Self.outline) -> NSImage {
-        // With nothing enabled/fetched, draw a single empty ring so the item stays visible.
-        let drawn = circles.isEmpty
-            ? [Circle(kind: .pie(time: 0, usage: 0), caption: "", usageColor: spendPalette.usage, timeColor: spendPalette.time)]
-            : circles
-        let size = size(circles: drawn.count)
-        let image = NSImage(size: size, flipped: false) { _ in
-            let y = (size.height - diameter) / 2
-            for (i, c) in drawn.enumerated() {
-                let rect = NSRect(x: CGFloat(i) * (diameter + gap), y: y, width: diameter, height: diameter)
-                // The tray drops the black rim so the tiny pies keep their full size.
-                draw(c, in: rect, bordered: false, outline: outline)
-            }
-            return true
-        }
-        image.isTemplate = false   // real colors, not a monochrome template
-        return image
-    }
-
-    /// Draw a single circle (pie or warning glyph). Used by both the tray image and
-    /// the dropdown header, keeping them in lockstep. `bordered` draws the black rim
+    /// Draw a single circle (pie or warning glyph). Shared by the dropdown header and
+    /// the ring-style tray, keeping the two in lockstep. `bordered` draws the black rim
     /// (menu only); `outline` is the hairline color.
     static func draw(_ circle: Circle, in rect: NSRect, bordered: Bool = true, outline: NSColor = Self.outline) {
         switch circle.kind {

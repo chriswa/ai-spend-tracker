@@ -83,11 +83,19 @@ enum SpendDisplayMode: String, CaseIterable {
     case circle, text, off
 }
 
+/// How the tray draws each window: as a ring (the default — a time wedge under a usage
+/// arc) or as a vertical bar (the same two readings unrolled into a column, about half
+/// the width). Purely a tray choice; the dropdown header always shows rings.
+enum TrayStyle: String, CaseIterable {
+    case rings, bars
+}
+
 /// App preferences backed by UserDefaults.
 enum Settings {
     private static let customLimitKey = "aiut.customCostTotalCents"
     private static let enabledProvidersKey = "aiut.enabledProviders"
     private static let spendDisplayKey = "aiut.spendDisplayMode"
+    private static let trayStyleKey = "aiut.trayStyle"
 
     /// Default combined spend-pie total ($2500). Always set — the spend pie has a
     /// denominator even before the user customizes it.
@@ -105,6 +113,12 @@ enum Settings {
     static var spendDisplayMode: SpendDisplayMode {
         get { SpendDisplayMode(rawValue: UserDefaults.standard.string(forKey: spendDisplayKey) ?? "") ?? .circle }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: spendDisplayKey) }
+    }
+
+    /// How each window is drawn in the tray (default: rings).
+    static var trayStyle: TrayStyle {
+        get { TrayStyle(rawValue: UserDefaults.standard.string(forKey: trayStyleKey) ?? "") ?? .rings }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: trayStyleKey) }
     }
 
     /// Which providers are shown. On first run — nothing persisted yet — all

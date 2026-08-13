@@ -39,7 +39,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         super.init()
         menu.delegate = self
         statusItem.menu = menu
-        // Repaint the tray when the menu bar flips light/dark so the pie hairline stays
+        // Repaint the tray when the menu bar flips light/dark so the ring hairline stays
         // legible against the bar. effectiveAppearance changes fire on the main thread.
         appearanceObserver = statusItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.redraw(now: Date()) }
@@ -116,21 +116,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// Repaint the tray icon from the current view model. The provider pies are always
-    /// drawn as the button image; combined spend follows `spendDisplayMode` — a pie in
-    /// the image (`.circle`), a green dollar title beside it (`.text`), or
-    /// nothing (`.off`).
+    /// Repaint the tray icon from the current view model. Every provider window is drawn
+    /// as the button image, in whichever shape `trayStyle` selects; combined spend follows
+    /// `spendDisplayMode` — its own glyph in the image (`.circle`), a green dollar title
+    /// beside it (`.text`), or nothing (`.off`).
     private func redraw(now: Date) {
         guard let button = statusItem.button else { return }
         let isDark = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         let circles = PieChart.circles(from: vm, now: now, includeSpend: vm.spendDisplayMode == .circle)
         let title = spendTitle()
 
-        // Everything is composited into the single button image (pies, then the spend
-        // text in `.text` mode), so we control the spacing exactly — a small left gap
-        // before the text and no trailing padding. Using the button's own title instead
-        // would add an uncontrollable gap and a right margin.
-        button.image = composeTrayImage(circles: circles, title: title, outline: PieChart.outline(forDark: isDark))
+        // Everything is composited into the single button image (the glyphs, then the
+        // spend text in `.text` mode), so we control the spacing exactly — a small left
+        // gap before the text and no trailing padding. Using the button's own title
+        // instead would add an uncontrollable gap and a right margin.
+        button.image = composeTrayImage(circles: circles, title: title, isDark: isDark)
         button.imagePosition = .imageOnly
         button.attributedTitle = NSAttributedString(string: "")
 
@@ -140,34 +140,34 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             : "AI usage — fetch failed for: \(errored.joined(separator: ", "))"
     }
 
-    /// Left gap between the provider pies and the spend text in `.text` mode. There is
+    /// Left gap between the provider glyphs and the spend text in `.text` mode. There is
     /// deliberately no matching right margin — the image ends flush with the text.
     private static let spendTextLeftMargin: CGFloat = 6
 
-    /// The final tray image: the provider pies, plus the spend dollar text laid out to
-    /// their right when `title` is set. When there are pies the text is offset by
-    /// `spendTextLeftMargin`; the image's right edge sits flush against the text (no
-    /// trailing padding). With no title this is just the pies (or the empty-ring
-    /// placeholder when nothing is enabled).
+    /// The final tray image: the provider glyphs in the selected style, plus the spend
+    /// dollar text laid out to their right when `title` is set. When there are glyphs the
+    /// text is offset by `spendTextLeftMargin`; the image's right edge sits flush against
+    /// the text (no trailing padding). With no title this is just the glyphs (or the
+    /// empty placeholder when nothing is enabled).
     private func composeTrayImage(circles: [PieChart.Circle], title: NSAttributedString?,
-                                  outline: NSColor) -> NSImage {
-        guard let title else { return PieChart.image(circles: circles, outline: outline) }
+                                  isDark: Bool) -> NSImage {
+        guard let title else { return vm.trayStyle.image(circles: circles, isDark: isDark) }
 
-        // Only draw the pies when there are real circles — otherwise the placeholder
-        // ring would sit as a stray dot beside the text.
-        let pies = circles.isEmpty ? nil : PieChart.image(circles: circles, outline: outline)
-        let piesSize = pies?.size ?? .zero
+        // Only draw the glyphs when there are real circles — otherwise the placeholder
+        // would sit as a stray mark beside the text.
+        let glyphs = circles.isEmpty ? nil : vm.trayStyle.image(circles: circles, isDark: isDark)
+        let glyphsSize = glyphs?.size ?? .zero
         let textSize = title.size()
         let textWidth = ceil(textSize.width)
-        let width = piesSize.width + Self.spendTextLeftMargin + textWidth
-        let height = max(piesSize.height, ceil(textSize.height))
+        let width = glyphsSize.width + Self.spendTextLeftMargin + textWidth
+        let height = max(glyphsSize.height, ceil(textSize.height))
 
         let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
-            if let pies {
-                pies.draw(at: NSPoint(x: 0, y: (height - piesSize.height) / 2),
-                          from: .zero, operation: .sourceOver, fraction: 1)
+            if let glyphs {
+                glyphs.draw(at: NSPoint(x: 0, y: (height - glyphsSize.height) / 2),
+                            from: .zero, operation: .sourceOver, fraction: 1)
             }
-            title.draw(at: NSPoint(x: piesSize.width + Self.spendTextLeftMargin,
+            title.draw(at: NSPoint(x: glyphsSize.width + Self.spendTextLeftMargin,
                                    y: (height - textSize.height) / 2))
             return true
         }
@@ -359,6 +359,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         providers.submenu = sub
         menu.addItem(providers)
 
+        addTrayStyleSubmenu()
         addSpendSubmenu()
 
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
@@ -375,7 +376,24 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
-    /// The always-reachable "Spend" submenu: a Ring/Text/Off radio group for how spend
+    /// The "Tray Style" submenu: a Rings/Bars radio group for the shape every window
+    /// takes in the menu bar. Rings are the default; bars trade the dial picture for
+    /// about half the width, which matters once several providers are enabled.
+    private func addTrayStyleSubmenu() {
+        let root = NSMenuItem(title: "Tray Style", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for style in TrayStyle.allCases {
+            let item = NSMenuItem(title: style.label, action: #selector(setTrayStyle(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = style.rawValue
+            item.state = vm.trayStyle == style ? .on : .off
+            sub.addItem(item)
+        }
+        root.submenu = sub
+        menu.addItem(root)
+    }
+
+    /// The always-reachable "Spend" submenu: a Chart/Text/Off radio group for how spend
     /// shows in the bar, then "Set Spend Budget…". Present even before any spend
     /// arrives, so the mode can be pre-set.
     private func addSpendSubmenu() {
@@ -396,9 +414,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(spend)
     }
 
-    /// Radio labels for the spend display modes, in menu order.
+    /// Radio labels for the spend display modes, in menu order. `.circle` is "Chart"
+    /// rather than "Ring" because the spend glyph takes whatever shape `trayStyle`
+    /// selects — it is a ring only while the tray is drawing rings.
     private static let spendDisplayLabels: [(SpendDisplayMode, String)] = [
-        (.circle, "Ring"), (.text, "Text"), (.off, "Off"),
+        (.circle, "Chart"), (.text, "Text"), (.off, "Off"),
     ]
 
     // MARK: - Actions
@@ -410,6 +430,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleProvider(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let id = ProviderID(rawValue: raw) else { return }
         onSetProvider?(id, sender.state != .on)
+    }
+
+    /// Switch the tray between rings and bars, persist it, and repaint.
+    @objc private func setTrayStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let style = TrayStyle(rawValue: raw) else { return }
+        Settings.trayStyle = style
+        vm.trayStyle = style
+        Log.log("tray: style = \(style.rawValue)")
+        rebuildMenu(now: Date())
+        redraw(now: Date())
     }
 
     /// Switch how spend renders in the bar, persist it, and repaint.

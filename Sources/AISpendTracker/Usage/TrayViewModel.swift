@@ -42,6 +42,8 @@ struct TrayViewModel {
     var customLimitCents: Double
     /// How the combined spend renders in the tray (the dropdown always keeps the ring).
     var spendDisplayMode: SpendDisplayMode = .circle
+    /// Whether the tray draws rings or bars (the dropdown always keeps rings).
+    var trayStyle: TrayStyle = .rings
 
     /// Sum of every enabled provider's spend for the current local calendar month —
     /// the ledger's reconstructed figure, falling back to the provider's raw month-to-date

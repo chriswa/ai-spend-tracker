@@ -144,6 +144,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
                                 reconstructedSpend: rt.reconstructedSpend)
         }
         menuBar.apply(TrayViewModel(providers: providers, customLimitCents: Settings.customLimitCents,
-                                    spendDisplayMode: Settings.spendDisplayMode))
+                                    spendDisplayMode: Settings.spendDisplayMode,
+                                    trayStyle: Settings.trayStyle))
     }
 }
