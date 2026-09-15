@@ -1,13 +1,18 @@
 import Foundation
 
 /// Persists each provider's last fetch attempt time, last successful snapshot, and the
-/// error from its most recent attempt (if it failed) to disk, so the app survives its
-/// own frequent restarts without re-hitting APIs *and* without misrepresenting a
-/// known-broken provider as healthy. On launch we reuse this cache and only fetch a
+/// error streak from its most recent attempts (if they failed) to disk, so the app
+/// survives its own frequent restarts without re-hitting APIs. A warning is delayed
+/// until a failure has persisted across several polling attempts, avoiding distracting
+/// transient-error glyphs. On launch we reuse this cache and only fetch a
 /// provider once its cooldown since the last *attempt* has elapsed. Keyed by
 /// `ProviderID` so providers are independent.
 @MainActor
 final class UsageStore {
+    /// At the normal five-minute polling cadence, this is thirty minutes of uninterrupted
+    /// failures before the tray switches from the last known data to a warning glyph.
+    static let visibleErrorThreshold = 6
+
     private struct ProviderCache: Codable {
         /// When we last *attempted* a fetch (success or failure) — drives the cooldown
         /// only. Deliberately distinct from `lastSuccessAt`: a failed attempt bumps this
@@ -17,10 +22,11 @@ final class UsageStore {
         /// … ago" line reflects across restarts.
         var lastSuccessAt: Date?
         var snapshot: ProviderSnapshot?
-        /// The user-facing message from the last attempt if it failed, else nil. Kept
-        /// with the snapshot so a restart restores the exact last-known display state:
-        /// a non-nil error over a retained snapshot is the stale (dimmed + ⚠︎) reading.
+        /// The user-facing message from the last attempt if it failed, else nil.
         var lastError: String?
+        /// Number of consecutive failed attempts. Optional for backwards-compatible
+        /// decoding of caches written before failure streaks were tracked.
+        var consecutiveErrorCount: Int?
     }
     private struct Cache: Codable {
         var providers: [String: ProviderCache]
@@ -44,6 +50,16 @@ final class UsageStore {
     func lastSuccessAt(_ id: ProviderID) -> Date? { cache.providers[id.rawValue]?.lastSuccessAt }
     func snapshot(_ id: ProviderID) -> ProviderSnapshot? { cache.providers[id.rawValue]?.snapshot }
     func lastError(_ id: ProviderID) -> String? { cache.providers[id.rawValue]?.lastError }
+    func consecutiveErrorCount(_ id: ProviderID) -> Int {
+        cache.providers[id.rawValue]?.consecutiveErrorCount ?? 0
+    }
+
+    /// The current error only becomes user-visible after repeated failures. Before
+    /// then, callers should continue presenting the last successful reading.
+    func visibleError(_ id: ProviderID) -> String? {
+        guard consecutiveErrorCount(id) >= Self.visibleErrorThreshold else { return nil }
+        return lastError(id)
+    }
 
     /// Record that we hit `id`'s API at `date` (success or failure) — the cooldown is
     /// measured from this.
@@ -60,14 +76,19 @@ final class UsageStore {
         cache.providers[id.rawValue, default: ProviderCache()].snapshot = snapshot
         cache.providers[id.rawValue, default: ProviderCache()].lastSuccessAt = date
         cache.providers[id.rawValue, default: ProviderCache()].lastError = nil
+        cache.providers[id.rawValue, default: ProviderCache()].consecutiveErrorCount = nil
         save()
     }
 
-    /// Record that `id`'s most recent attempt failed with `message`. The retained
-    /// snapshot (if any) is left untouched, so the pair reconstructs the stale reading.
-    func saveError(_ id: ProviderID, _ message: String) {
+    /// Record a failed attempt and return its position in this uninterrupted failure
+    /// streak. The retained snapshot (if any) is left untouched.
+    @discardableResult
+    func saveError(_ id: ProviderID, _ message: String) -> Int {
+        let count = consecutiveErrorCount(id) + 1
         cache.providers[id.rawValue, default: ProviderCache()].lastError = message
+        cache.providers[id.rawValue, default: ProviderCache()].consecutiveErrorCount = count
         save()
+        return count
     }
 
     private func save() {

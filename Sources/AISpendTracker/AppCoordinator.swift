@@ -67,9 +67,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         // Restore the exact last-known display state, so a restart within the cooldown
         // isn't blank — and doesn't misrepresent the provider — while we wait to
         // re-fetch. `lastUpdated` is the last *success* (data freshness), never the last
-        // attempt, so a stale reading never claims to be fresh; `error` is restored too,
-        // so a provider that was failing before the restart still reads as stale
-        // (dimmed + ⚠︎) rather than briefly healthy until the next fetch.
+        // attempt. A failed fetch is only surfaced after six consecutive failures, so
+        // short-lived outages keep their last known reading, even across a restart.
         // Show the persisted reconstruction on launch; do NOT re-ingest the cached
         // snapshot (it was already folded into the ledger when first fetched — replaying
         // it would double-count). A month rollover that happened while we were closed is
@@ -77,7 +76,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         runtimes[id] = Runtime(provider: provider, poller: poller,
                                history: UsageHistory(providerID: id),
                                snapshot: store.snapshot(id), lastUpdated: store.lastSuccessAt(id),
-                               error: store.lastError(id),
+                               error: store.visibleError(id),
                                lastRawResponse: rawStore.raw(id),
                                reconstructedSpend: spendLedger.entry(id))
 
@@ -101,8 +100,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         }
         poller.onError = { [weak self] message, raw in
             guard let self else { return }
-            self.runtimes[id]?.error = message
-            self.store.saveError(id, message)
+            let count = self.store.saveError(id, message)
+            self.runtimes[id]?.error = count >= UsageStore.visibleErrorThreshold ? message : nil
             // Persist the failing body when the response carried one, so "copy last
             // response" surfaces the actual error payload rather than stale success.
             if let raw {

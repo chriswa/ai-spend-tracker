@@ -30,10 +30,9 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertNil(reopened.lastFetchAt(.cursor))
     }
 
-    /// A failed attempt after a success is restored as: stale snapshot + last-success
-    /// time (never the failed-attempt time) + the error message. This is the state that
-    /// makes a restart show the provider as stale rather than falsely healthy/fresh.
-    func testErrorOverStaleSnapshotSurvivesRestart() throws {
+    /// A failed attempt after a success preserves the last-good snapshot and success
+    /// timestamp, but does not surface an error until the failure has repeated six times.
+    func testErrorStreakPreservesStaleSnapshotAndSurvivesRestart() throws {
         let url = tempURL(); defer { try? FileManager.default.removeItem(at: url) }
         let success = Date(timeIntervalSince1970: 1_800_000_000)
         let failAttempt = success.addingTimeInterval(3600)
@@ -45,18 +44,34 @@ final class UsageStoreTests: XCTestCase {
                             timeBasis: .rollingWindow(length: WindowLength.sevenDay))]), at: success)
             // A later attempt fails: the attempt clock advances, the data does not.
             store.recordAttempt(.codex, at: failAttempt)
-            store.saveError(.codex, "Not logged in")
+            for _ in 0..<UsageStore.visibleErrorThreshold {
+                store.saveError(.codex, "Not logged in")
+            }
         }
         let reopened = UsageStore(fileURL: url)
         XCTAssertEqual(reopened.lastError(.codex), "Not logged in")
+        XCTAssertEqual(reopened.consecutiveErrorCount(.codex), UsageStore.visibleErrorThreshold)
+        XCTAssertEqual(reopened.visibleError(.codex), "Not logged in")
         XCTAssertNotNil(reopened.snapshot(.codex), "stale data must be retained")
         XCTAssertEqual(reopened.lastSuccessAt(.codex)?.timeIntervalSinceReferenceDate ?? 0,
                        success.timeIntervalSinceReferenceDate, accuracy: 1e-6,
                        "freshness is the last success, not the failed attempt")
 
-        // A subsequent success clears the error (invariant: error ⇔ last attempt failed).
+        // A subsequent success clears both the error and its streak.
         reopened.saveSnapshot(.codex, ProviderSnapshot(), at: failAttempt)
         XCTAssertNil(reopened.lastError(.codex))
+        XCTAssertEqual(reopened.consecutiveErrorCount(.codex), 0)
+    }
+
+    func testErrorOnlyBecomesVisibleOnSixthConsecutiveFailure() throws {
+        let url = tempURL(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = UsageStore(fileURL: url)
+        for expectedCount in 1..<UsageStore.visibleErrorThreshold {
+            XCTAssertEqual(store.saveError(.codex, "Temporary outage"), expectedCount)
+            XCTAssertNil(store.visibleError(.codex))
+        }
+        XCTAssertEqual(store.saveError(.codex, "Temporary outage"), UsageStore.visibleErrorThreshold)
+        XCTAssertEqual(store.visibleError(.codex), "Temporary outage")
     }
 
     /// The spend total defaults to $2500 when unset.
