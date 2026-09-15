@@ -12,7 +12,7 @@ Key constants:
 
 - **Team ID:** `7H2524M5TN`
 - **Notary keychain profile:** `claude-usage-notary`
-- **GitHub repo:** `chris-spare/claude-usage-tracker`
+- **GitHub repo:** `chriswa/ai-spend-tracker`
 - App / bundle / zip names come from `Resources/Info.plist` and `scripts/make-release.sh`
   (they've been renamed before). The commands below use the current names; if it's
   renamed again, the script prints the exact output paths.
@@ -99,7 +99,7 @@ build output, so they keep working if the app is renamed. Run them from the repo
    VER=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)
    gh release create "v$VER" \
      "build/$EXE.zip#$NAME.app (universal, notarized)" \
-     --repo chris-spare/claude-usage-tracker \
+     --repo chriswa/ai-spend-tracker \
      --target main \
      --title "$NAME v$VER" \
      --notes "What changed, plus install steps."
@@ -108,7 +108,7 @@ build output, so they keep working if the app is renamed. Run them from the repo
 5. **Confirm the asset uploaded:**
    ```bash
    VER=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)
-   gh release view "v$VER" --repo chris-spare/claude-usage-tracker \
+   gh release view "v$VER" --repo chriswa/ai-spend-tracker \
      --json assets --jq '.assets[] | {name, state}'
    ```
 
