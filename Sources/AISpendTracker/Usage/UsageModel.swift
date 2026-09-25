@@ -4,7 +4,11 @@ import Foundation
 /// (cache/history filenames, enabled-set storage) so it must stay stable.
 /// `CaseIterable` order is the canonical left-to-right pie/section order.
 enum ProviderID: String, CaseIterable, Codable {
-    case claude, codex, cursor, devin
+    case claude, codex, cursor, devin, jev
+
+    /// Whether the provider has rate-limit windows at all. A spend-only provider (Jev:
+    /// pay-per-token, no subscription) draws no circle and only feeds the spend total.
+    var hasUsageWindows: Bool { self != .jev }
 }
 
 /// How a window's elapsed-time wedge (the gray/dark pie layer) is computed.
@@ -59,29 +63,40 @@ struct UsageWindow: Codable, Equatable {
 /// It is **nil when the provider exposes no reset timestamp** (Claude) — the ledger then
 /// falls back to detecting a reset from a drop in `usedCents`, which is less reliable
 /// (see `SpendLedger`).
+///
+/// `isLocalCalendarMonth` marks a reading whose cycle *is* the user's local calendar
+/// month, measured on this machine's clock (Jev, computed locally). The ledger takes such
+/// a reading verbatim instead of reconstructing it. Optional so older caches decode.
 struct SpendInfo: Codable, Equatable {
     var usedCents: Double
     var apiLimitCents: Double?
     var label: String
     var cycleResetsAt: Date?
+    var isLocalCalendarMonth: Bool?
 
-    init(usedCents: Double, apiLimitCents: Double?, label: String, cycleResetsAt: Date? = nil) {
+    init(usedCents: Double, apiLimitCents: Double?, label: String, cycleResetsAt: Date? = nil,
+         isLocalCalendarMonth: Bool = false) {
         self.usedCents = usedCents
         self.apiLimitCents = apiLimitCents
         self.label = label
         self.cycleResetsAt = cycleResetsAt
+        self.isLocalCalendarMonth = isLocalCalendarMonth ? true : nil
     }
 }
 
 /// What every provider returns from a successful fetch: an ordered list of windows
-/// (0…N pies) plus an optional spend contribution.
+/// (0…N pies), an optional spend contribution, and an optional `warning` — a problem
+/// worth showing even though the data is good (e.g. Jev's command running slowly).
+/// Unlike a fetch error, a warning is shown on the first occurrence.
 struct ProviderSnapshot: Codable, Equatable {
     var windows: [UsageWindow]
     var spend: SpendInfo?
+    var warning: String?
 
-    init(windows: [UsageWindow] = [], spend: SpendInfo? = nil) {
+    init(windows: [UsageWindow] = [], spend: SpendInfo? = nil, warning: String? = nil) {
         self.windows = windows
         self.spend = spend
+        self.warning = warning
     }
 }
 

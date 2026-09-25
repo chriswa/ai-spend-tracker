@@ -100,6 +100,11 @@ struct MockProvider: UsageProvider {
                                 timeBasis: .rollingWindow(length: WindowLength.sevenDay)),
                 ],
                 spend: SpendInfo(usedCents: 1761, apiLimitCents: nil, label: "Devin on-demand"))
+        case .jev:
+            displayName = "Jev"
+            snapshot = ProviderSnapshot(
+                spend: SpendInfo(usedCents: 312, apiLimitCents: nil, label: "Jev",
+                                 isLocalCalendarMonth: true))
         }
     }
 

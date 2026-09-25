@@ -98,7 +98,7 @@ final class UsageStoreTests: XCTestCase {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
         UserDefaults.standard.removeObject(forKey: key)
-        XCTAssertEqual(Settings.enabledProviders, Set(ProviderID.allCases))
+        XCTAssertEqual(Settings.enabledProviders, [.claude, .codex, .cursor, .devin])   // Jev is opt-in
 
         Settings.enabledProviders = [.claude, .cursor]
         XCTAssertEqual(Settings.enabledProviders, [.claude, .cursor])

@@ -31,7 +31,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     /// Human names for every provider (the submenu lists all, enabled or not).
     private static let displayNames: [ProviderID: String] = [
-        .claude: "Claude", .codex: "Codex", .cursor: "Cursor", .devin: "Devin",
+        .claude: "Claude", .codex: "Codex", .cursor: "Cursor", .devin: "Devin", .jev: "Jev",
     ]
 
     override init() {
@@ -225,8 +225,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     /// A status line for a provider that isn't drawing healthy columns — an error
-    /// (message + Copy Error), "No data yet", or a plan with no usage window. Healthy
-    /// providers show nothing here (all their detail lives in the rings header).
+    /// (message + Copy Error), "No data yet", a plan with no usage window, or a warning
+    /// the fetch attached to good data. Healthy providers show nothing here (all their detail lives in the rings header).
     /// Returns whether anything was added (so the caller can place a separator).
     @discardableResult
     private func addProviderStatus(_ p: ProviderView) -> Bool {
@@ -248,14 +248,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(Self.disabledItem("No data yet"))   // enabled, not fetched yet
             return true
         }
-        guard !snap.windows.isEmpty else {
+        var notes: [String] = []
+        if snap.windows.isEmpty && p.id.hasUsageWindows {
             // Fetched fine, but this plan exposes no rate-limit window (e.g. a
             // usage-based account) — so there's no circle to draw for it.
-            addProviderTitle(p)
-            menu.addItem(Self.disabledItem("No usage window on this plan"))
-            return true
+            notes.append("No usage window on this plan")
         }
-        return false   // healthy — everything's in the rings header columns
+        if let warning = snap.warning { notes.append("⚠︎ \(warning)") }
+        guard !notes.isEmpty else { return false }   // healthy — all in the rings header
+        addProviderTitle(p)
+        notes.forEach { menu.addItem(Self.disabledItem($0)) }
+        return true
     }
 
     /// The provider's name as a colored, bold section title.

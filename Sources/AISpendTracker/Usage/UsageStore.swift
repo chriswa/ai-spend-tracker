@@ -142,14 +142,17 @@ enum Settings {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: trayStyleKey) }
     }
 
-    /// Which providers are shown. On first run — nothing persisted yet — all
-    /// providers are enabled. After that the user's explicit choice is honored,
+    /// Enabled on first run: everything except Jev, a local CLI few machines have.
+    static let defaultEnabledProviders = Set(ProviderID.allCases.filter { $0 != .jev })
+
+    /// Which providers are shown. On first run — nothing persisted yet —
+    /// `defaultEnabledProviders` are enabled. After that the user's explicit choice is honored,
     /// including turning them all off (which persists as an empty selection, kept
     /// distinct from the never-set state by the key's absence).
     static var enabledProviders: Set<ProviderID> {
         get {
             guard let raw = UserDefaults.standard.array(forKey: enabledProvidersKey) as? [String] else {
-                return Set(ProviderID.allCases)
+                return defaultEnabledProviders
             }
             return Set(raw.compactMap(ProviderID.init(rawValue:)))
         }

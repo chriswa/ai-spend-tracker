@@ -220,4 +220,20 @@ final class SpendLedgerTests: XCTestCase {
         XCTAssertEqual(SpendLedger.monthKey(date(2026, 7, 1), calendar: cal), "2026-07")
         XCTAssertEqual(SpendLedger.monthKey(date(2026, 12, 31, 23, 59), calendar: cal), "2026-12")
     }
+
+    // MARK: - Calendar-aligned provider (Jev)
+
+    /// A reading that already covers the local calendar month is taken verbatim, even
+    /// across an offline rollover where the new month's spend exceeds the old reading
+    /// (which the reconstruction would otherwise treat as a carry-over).
+    func testCalendarAlignedReadingIsVerbatim() {
+        let s1 = SpendLedger.reconstruct(prior: nil, rawCents: 500, cycleResetsAt: date(2026, 8, 1),
+                                         isLocalCalendarMonth: true, now: date(2026, 7, 31, 12), calendar: cal)
+        let s2 = SpendLedger.reconstruct(prior: s1, rawCents: 900, cycleResetsAt: date(2026, 9, 1),
+                                         isLocalCalendarMonth: true, now: date(2026, 8, 20), calendar: cal)
+        XCTAssertEqual(s2.monthSpendCents, 900)
+        XCTAssertEqual(s2.calendarMonthKey, "2026-08")
+        XCTAssertFalse(s2.isMonthUncertain)
+        XCTAssertFalse(s2.lowConfidence)
+    }
 }

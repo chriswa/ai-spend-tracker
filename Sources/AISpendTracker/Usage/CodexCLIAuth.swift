@@ -159,11 +159,11 @@ enum CodexCLIAuth {
 
     // MARK: - Locating the CLI
 
-    /// Find the `codex` binary. A menu-bar app launched from Finder inherits a bare
-    /// `PATH`, so the usual install locations are probed directly before falling back
-    /// to the user's login shell (which is what covers nvm/asdf/volta-style installs).
-    /// Deliberately not cached: this runs only when a token has actually expired, and
-    /// caching a miss would ignore a `codex` installed after launch.
+    /// Find the `codex` binary. The usual install locations are probed directly
+    /// before falling back to the user's login-shell `PATH` (which is what covers
+    /// nvm/asdf/volta-style installs). Deliberately not cached: this runs only when a
+    /// token has actually expired, and caching a miss would ignore a `codex` installed
+    /// after launch.
     private static func executable() -> URL? {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
@@ -174,26 +174,6 @@ enum CodexCLIAuth {
             home.appendingPathComponent(".bun/bin/codex"),
         ]
         if let hit = candidates.first(where: { fm.isExecutableFile(atPath: $0.path) }) { return hit }
-        return loginShellLookup()
-    }
-
-    private static func loginShellLookup() -> URL? {
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        guard FileManager.default.isExecutableFile(atPath: shell) else { return nil }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: shell)
-        proc.arguments = ["-lc", "command -v codex"]
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = FileHandle.nullDevice
-        guard (try? proc.run()) != nil else { return nil }
-        // Read before waiting: a login shell can emit more than fits the pipe buffer.
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        let path = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard proc.terminationStatus == 0, !path.isEmpty,
-              FileManager.default.isExecutableFile(atPath: path) else { return nil }
-        return URL(fileURLWithPath: path)
+        return LoginShell.which("codex")
     }
 }

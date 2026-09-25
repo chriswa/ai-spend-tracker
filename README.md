@@ -31,8 +31,8 @@ shows the error with a **Copy Error** action, without affecting the other provid
 
 ### Providers
 
-Enable or disable each provider from the menu → **Providers**. All are on by
-default; disable any you don't use and your choice sticks. Each reads its own local
+Enable or disable each provider from the menu → **Providers**. All but Jev are on
+by default; disable any you don't use and your choice sticks. Each reads its own local
 credentials:
 
 - **Claude** — the `Claude Code-credentials` Keychain item (Claude.ai subscription).
@@ -44,6 +44,10 @@ credentials:
   the CLI and Desktop already use. The daily/weekly rings come from the Codeium
   usage-meter RPC (the one Devin Desktop's meter shows); the on-demand overage
   dollars come from the Devin webapp's billing API.
+- **Jev** (off by default) — runs `jev --mtd` from your login-shell `PATH` and adds
+  its month-to-date dollars to the spend total. Spend only: Jev has no subscription,
+  so it draws no circle. If the command takes over 2 seconds, the menu shows a
+  warning; past 30 seconds it's killed and counted as a failed fetch.
 
 ### Spend budget
 

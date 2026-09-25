@@ -151,7 +151,8 @@ final class SpendLedger {
     @discardableResult
     func ingest(_ id: ProviderID, spend: SpendInfo, now: Date = Date()) -> Entry {
         let updated = Self.reconstruct(prior: entries[id], rawCents: spend.usedCents,
-                                       cycleResetsAt: spend.cycleResetsAt, now: now)
+                                       cycleResetsAt: spend.cycleResetsAt,
+                                       isLocalCalendarMonth: spend.isLocalCalendarMonth ?? false, now: now)
         entries[id] = updated
         save()
         return updated
@@ -161,10 +162,22 @@ final class SpendLedger {
 
     /// Compute the next `Entry` from the prior one and a fresh reading. Pure and
     /// side-effect-free so the state machine can be exercised in isolation.
+    /// `isLocalCalendarMonth`: the reading already covers exactly this local calendar
+    /// month, so it is taken verbatim — nothing carried in, nothing banked, never uncertain.
     nonisolated static func reconstruct(prior: Entry?, rawCents: Double, cycleResetsAt: Date?,
+                                        isLocalCalendarMonth: Bool = false,
                                         now: Date, calendar: Calendar = .current) -> Entry {
         let monthKey = Self.monthKey(now, calendar: calendar)
         let cycleKey = cycleResetsAt.map(Self.cycleKey)
+
+        if isLocalCalendarMonth {
+            return Entry(calendarMonthKey: monthKey, carryInCents: 0, completedCents: 0,
+                         rawProviderCents: rawCents, cycleKey: cycleKey, cycleResetsAt: cycleResetsAt,
+                         lastSampleAt: now, previousSampleAt: prior?.lastSampleAt,
+                         lastResetAt: nil, lastResetViaTimestamp: nil,
+                         lowConfidence: false, confidenceNote: nil,
+                         monthUncertain: false, monthUncertainReason: nil)
+        }
 
         // First reading ever for this provider. Seed carryIn = 0 (a deliberate choice:
         // the alternative, carryIn = current MTD, would zero out real spend already
