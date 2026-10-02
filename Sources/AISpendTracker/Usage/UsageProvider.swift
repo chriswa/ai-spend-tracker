@@ -6,7 +6,6 @@ import Foundation
 /// in the render layer, keyed by `id`.
 protocol UsageProvider: Sendable {
     var id: ProviderID { get }
-    var displayName: String { get }
     /// Recommended seconds between fetches; the poller never fetches faster.
     var suggestedInterval: TimeInterval { get }
     func fetch() async throws -> FetchResult
@@ -44,7 +43,6 @@ struct ResponseParseError: Error, RawResponseCarrying {
 /// arcs keep advancing. Each mock provider mimics the real shape of its counterpart.
 struct MockProvider: UsageProvider {
     let id: ProviderID
-    let displayName: String
     let suggestedInterval: TimeInterval = 60
     private let snapshot: ProviderSnapshot
 
@@ -52,7 +50,6 @@ struct MockProvider: UsageProvider {
         self.id = id
         switch id {
         case .claude:
-            displayName = "Claude"
             let fiveReset = calendar.date(bySettingHour: 13, minute: 30, second: 0, of: now) ?? now
             let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
             let sevenReset = calendar.date(bySettingHour: 14, minute: 0, second: 0, of: tomorrow) ?? now
@@ -67,7 +64,6 @@ struct MockProvider: UsageProvider {
                 ],
                 spend: SpendInfo(usedCents: 12345, apiLimitCents: 50000, label: "Claude extra usage"))
         case .codex:
-            displayName = "Codex"
             let reset = calendar.date(byAdding: .hour, value: 3, to: now) ?? now
             snapshot = ProviderSnapshot(
                 windows: [
@@ -79,7 +75,6 @@ struct MockProvider: UsageProvider {
                 ],
                 spend: SpendInfo(usedCents: 800, apiLimitCents: nil, label: "Codex overage"))
         case .cursor:
-            displayName = "Cursor"
             let start = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
             let end = calendar.date(byAdding: .month, value: 1, to: start) ?? now
             snapshot = ProviderSnapshot(
@@ -89,7 +84,6 @@ struct MockProvider: UsageProvider {
                 ],
                 spend: SpendInfo(usedCents: 4200, apiLimitCents: 150000, label: "Cursor on-demand"))
         case .devin:
-            displayName = "Devin"
             let dailyReset = calendar.date(byAdding: .hour, value: 11, to: now) ?? now
             let weeklyReset = calendar.date(byAdding: .day, value: 4, to: now) ?? now
             snapshot = ProviderSnapshot(
@@ -101,7 +95,6 @@ struct MockProvider: UsageProvider {
                 ],
                 spend: SpendInfo(usedCents: 1761, apiLimitCents: nil, label: "Devin on-demand"))
         case .jev:
-            displayName = "Jev"
             snapshot = ProviderSnapshot(
                 spend: SpendInfo(usedCents: 312, apiLimitCents: nil, label: "Jev",
                                  isLocalCalendarMonth: true))

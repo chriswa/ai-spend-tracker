@@ -137,7 +137,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     private func render() {
         let providers = ProviderID.allCases.compactMap { id -> ProviderView? in
             guard let rt = runtimes[id] else { return nil }
-            return ProviderView(id: id, displayName: rt.provider.displayName,
+            return ProviderView(id: id, displayName: id.displayName,
                                 snapshot: rt.snapshot, lastUpdated: rt.lastUpdated,
                                 error: rt.error, history: rt.history.recent(),
                                 lastRawResponse: rt.lastRawResponse,

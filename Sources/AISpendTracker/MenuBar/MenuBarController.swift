@@ -29,11 +29,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Enable/disable a provider (persists + starts/stops its poller in the coordinator).
     var onSetProvider: ((ProviderID, Bool) -> Void)?
 
-    /// Human names for every provider (the submenu lists all, enabled or not).
-    private static let displayNames: [ProviderID: String] = [
-        .claude: "Claude", .codex: "Codex", .cursor: "Cursor", .devin: "Devin", .jev: "Jev",
-    ]
-
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
@@ -352,7 +347,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let providers = NSMenuItem(title: "Providers", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         for id in ProviderID.allCases {
-            let item = NSMenuItem(title: Self.displayNames[id] ?? id.rawValue,
+            let item = NSMenuItem(title: id.displayName,
                                   action: #selector(toggleProvider(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = id.rawValue

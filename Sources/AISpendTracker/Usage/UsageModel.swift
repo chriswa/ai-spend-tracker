@@ -9,6 +9,16 @@ enum ProviderID: String, CaseIterable, Codable {
     /// Whether the provider has rate-limit windows at all. A spend-only provider (Jev:
     /// pay-per-token, no subscription) draws no circle and only feeds the spend total.
     var hasUsageWindows: Bool { self != .jev }
+
+    var displayName: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex:  "Codex"
+        case .cursor: "Cursor"
+        case .devin:  "Devin"
+        case .jev:    "Jev"
+        }
+    }
 }
 
 /// How a window's elapsed-time wedge (the gray/dark pie layer) is computed.

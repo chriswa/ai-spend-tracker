@@ -1,0 +1,11 @@
+#!/bin/sh
+# Print AI Spend Tracker's current usage and spend as JSON. Runs the app binary in
+# `--json` mode, which reads the running app's saved readings and never fetches.
+here="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+for app in "/Applications/AI Spend Tracker.app" "$here/build/AI Spend Tracker.app"; do
+    if [ -x "$app/Contents/MacOS/AISpendTracker" ]; then
+        exec "$app/Contents/MacOS/AISpendTracker" --json
+    fi
+done
+echo "ai-spend: AI Spend Tracker.app not found" >&2
+exit 1

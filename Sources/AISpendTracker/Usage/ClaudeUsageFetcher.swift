@@ -9,7 +9,6 @@ import Foundation
 /// Cadence: the caller must not fetch more than once per 5 minutes.
 final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
     let id: ProviderID = .claude
-    let displayName = "Claude"
     /// Never faster than once per 5 minutes (Anthropic usage endpoint).
     let suggestedInterval: TimeInterval = 5 * 60
 

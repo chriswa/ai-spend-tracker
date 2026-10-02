@@ -18,7 +18,6 @@ import Foundation
 /// in *credits* (not dollars), which we value at an estimated per-credit rate.
 final class CodexUsageFetcher: UsageProvider, @unchecked Sendable {
     let id: ProviderID = .codex
-    let displayName = "Codex"
     let suggestedInterval: TimeInterval = 5 * 60
 
     private static let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!

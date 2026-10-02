@@ -20,7 +20,6 @@ import Foundation
 ///     contribution.
 final class DevinUsageFetcher: UsageProvider, @unchecked Sendable {
     let id: ProviderID = .devin
-    let displayName = "Devin"
     let suggestedInterval: TimeInterval = 5 * 60
 
     private static let statusURL = URL(

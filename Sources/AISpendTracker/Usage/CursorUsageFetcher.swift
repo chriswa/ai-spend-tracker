@@ -13,7 +13,6 @@ import Foundation
 /// window plus a spend contribution.
 final class CursorUsageFetcher: UsageProvider, @unchecked Sendable {
     let id: ProviderID = .cursor
-    let displayName = "Cursor"
     let suggestedInterval: TimeInterval = 5 * 60
 
     private static let keychainService = "cursor-access-token"

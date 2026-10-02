@@ -13,7 +13,6 @@ import Foundation
 /// month and the ledger takes it verbatim (`SpendInfo.isLocalCalendarMonth`).
 final class JevUsageFetcher: UsageProvider, @unchecked Sendable {
     let id: ProviderID = .jev
-    let displayName = "Jev"
     let suggestedInterval: TimeInterval = 5 * 60
 
     /// A successful run slower than this adds a warning to the snapshot.
