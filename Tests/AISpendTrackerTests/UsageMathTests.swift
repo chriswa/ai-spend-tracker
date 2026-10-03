@@ -154,4 +154,10 @@ final class UsageMathTests: XCTestCase {
         XCTAssertEqual(UsageMath.formatDelta(to: now.addingTimeInterval(25 * 3600 + 50 * 60), now: now), "1d 1h")
         XCTAssertEqual(UsageMath.formatDelta(to: now.addingTimeInterval(48 * 3600), now: now), "2d")
     }
+
+    func testFormatDollarsExact() {
+        // jev --mtd's 0.000012138, as the fetcher stores it (dollars × 100).
+        XCTAssertEqual(UsageMath.formatDollarsExact(0.000012138 * 100), "$0.000012138")
+        XCTAssertEqual(UsageMath.formatDollarsExact(0.4), "$0.004")
+    }
 }

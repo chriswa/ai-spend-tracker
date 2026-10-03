@@ -291,7 +291,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             // the "Spend Breakdown" submenu says why).
             let cents = p.reconstructedSpend?.monthSpendCents ?? spend.usedCents
             let warn = (p.reconstructedSpend?.isMonthUncertain ?? false) ? " ⚠︎" : ""
-            menu.addItem(Self.disabledItem("  \(spend.label): \(UsageMath.formatDollars(cents))\(warn)"))
+            let shown = UsageMath.formatDollars(cents)
+            // Jev's spend accrues in tiny increments; while it still rounds to $0.00,
+            // also show the exact figure so it's visibly ticking.
+            let exact = p.id == .jev && cents > 0 && shown == UsageMath.formatDollars(0)
+                ? " (\(UsageMath.formatDollarsExact(cents)))" : ""
+            menu.addItem(Self.disabledItem("  \(spend.label): \(shown)\(exact)\(warn)"))
         }
         // The audit lives with the spend readout it explains, above the config rule.
         addSpendBreakdownSubmenu()

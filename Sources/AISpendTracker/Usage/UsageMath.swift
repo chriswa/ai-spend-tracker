@@ -186,6 +186,14 @@ enum UsageMath {
         String(format: "$%.2f", cents / 100)
     }
 
+    /// Cents → "$0.000012138": every decimal place the Double carries (its shortest
+    /// round-trip form), never scientific notation. For sub-cent readings `formatDollars`
+    /// shows as $0.00.
+    static func formatDollarsExact(_ cents: Double) -> String {
+        let dollars = cents / 100
+        return "$" + (Decimal(string: "\(dollars)")?.description ?? "\(dollars)")
+    }
+
     /// Cents → "$43", rounded to the nearest dollar. Used for the compact tray glance;
     /// the dropdown keeps cent precision via `formatDollars`.
     static func formatDollarsRounded(_ cents: Double) -> String {
