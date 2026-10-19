@@ -13,6 +13,8 @@ if CommandLine.arguments.contains("--json") {
     exit(0)
 }
 
+ApplicationsRelocator.relocateIfNeeded()
+
 // Runs as a menu-bar accessory: no dock icon, no main window. (Equivalent to
 // LSUIElement, set programmatically so `swift run` works without the bundle.)
 let app = NSApplication.shared
