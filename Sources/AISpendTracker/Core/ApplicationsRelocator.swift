@@ -9,6 +9,22 @@ import AppKit
 /// whatever section it's assigned to. Running from /Applications avoids that
 /// without changing how the app is built or launched.
 enum ApplicationsRelocator {
+    private static let sourceKey = "ApplicationsRelocator.sourceBundlePath"
+
+    /// The bundle a restart should launch: the dev build this copy was installed
+    /// from, so a restart after a rebuild picks up the new build instead of
+    /// relaunching the stale /Applications copy.
+    static var relaunchBundleURL: URL {
+        #if DEBUG
+        if let path = UserDefaults.standard.string(forKey: sourceKey),
+           path != Bundle.main.bundleURL.resolvingSymlinksInPath().path,
+           FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        #endif
+        return Bundle.main.bundleURL
+    }
+
     static func relocateIfNeeded() {
         #if DEBUG
         let source = Bundle.main.bundleURL.resolvingSymlinksInPath()
@@ -23,6 +39,7 @@ enum ApplicationsRelocator {
             Log.log("relocate: couldn't copy to \(dest.path), running from \(source.path): \(error)")
             return
         }
+        UserDefaults.standard.set(source.path, forKey: sourceKey)
 
         let open = Process()
         open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
