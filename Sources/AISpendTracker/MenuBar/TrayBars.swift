@@ -72,15 +72,18 @@ enum TrayBars {
         let total = circles.indices.reduce(CGFloat(0)) { w, i in
             w + leadingGap(i, in: circles) + slotWidth(circles[i])
         }
-        return NSSize(width: max(barWidth, total), height: height + 2)
+        let underline = ActiveAccountUnderline.isNeeded(circles) ? ActiveAccountUnderline.reservedHeight : 0
+        return NSSize(width: max(barWidth, total), height: height + 2 + underline)
     }
 
     /// Compose a tray image straight from a view model.
-    static func trayImage(from vm: TrayViewModel, now: Date = Date()) -> NSImage {
-        image(circles: PieChart.circles(from: vm, now: now))
+    static func trayImage(from vm: TrayViewModel, now: Date = Date(), isDark: Bool = true) -> NSImage {
+        image(circles: PieChart.circles(from: vm, now: now), isDark: isDark)
     }
 
-    static func image(circles: [PieChart.Circle]) -> NSImage {
+    /// `isDark` is the menu bar's appearance, which only the active-account underline
+    /// (drawn on the bar itself) depends on.
+    static func image(circles: [PieChart.Circle], isDark: Bool = true) -> NSImage {
         // With nothing enabled/fetched, draw a single empty bar so the item stays visible.
         let drawn = circles.isEmpty
             ? [PieChart.Circle(kind: .pie(time: 0, usage: 0), caption: "",
@@ -89,14 +92,18 @@ enum TrayBars {
             : circles
         let size = size(circles: drawn)
         let image = NSImage(size: size, flipped: false) { _ in
-            let y = (size.height - height) / 2
+            // The glyphs sit 1pt off the top edge; any underline space is below them.
+            let y = size.height - 1 - height
             var x: CGFloat = 0
+            var slots: [NSRect] = []
             for i in drawn.indices {
                 x += leadingGap(i, in: drawn)
-                let w = slotWidth(drawn[i])
-                draw(drawn[i], in: NSRect(x: x, y: y, width: w, height: height))
-                x += w
+                let slot = NSRect(x: x, y: y, width: slotWidth(drawn[i]), height: height)
+                draw(drawn[i], in: slot)
+                slots.append(slot)
+                x += slot.width
             }
+            ActiveAccountUnderline.draw(circles: drawn, slots: slots, isDark: isDark)
             return true
         }
         image.isTemplate = false   // real colors, not a monochrome template

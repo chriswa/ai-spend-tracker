@@ -36,6 +36,12 @@ by default; disable any you don't use and your choice sticks. Each reads its own
 credentials:
 
 - **Claude** — the `Claude Code-credentials` Keychain item (Claude.ai subscription).
+  Readings are tagged with the signed-in account from `~/.claude.json`, so switching
+  between accounts with `/login` (say, a personal plan and a Team seat) keeps a column
+  group per account, in the order each was first seen. Only the signed-in account can
+  be fetched; the others show their last reading carried forward, assuming no use
+  since — each window holds until its reset passes, then reads as idle. The signed-in
+  account is underlined in the menu bar and the details panel.
 - **Codex** — `~/.codex/auth.json` (ChatGPT login).
 - **Cursor** — the `cursor-access-token` Keychain item.
 - **Devin** — the Windsurf session token the Devin CLI writes to

@@ -111,3 +111,27 @@ private extension PieChart.Circle {
         return .nan
     }
 }
+
+/// Locks in how the dropdown header wraps its columns onto rows to stay on screen.
+final class HeaderGridLayoutTests: XCTestCase {
+    func testGroupsComeFromStartsGroupFlags() {
+        XCTAssertEqual(GridLayout.groupSizes([true, false, false, true, true, false]), [3, 1, 2])
+    }
+
+    func testEverythingOnOneRowWhenItFits() {
+        let slots = GridLayout.pack(groupSizes: [3, 1], maxColumns: 4)
+        XCTAssertEqual(slots.map(\.row), [0, 0, 0, 0])
+        XCTAssertEqual(slots.map(\.column), [0, 1, 2, 3])
+    }
+
+    func testAGroupThatDoesNotFitStartsANewRow() {
+        let slots = GridLayout.pack(groupSizes: [3, 3, 1, 1, 2, 1], maxColumns: 8)
+        XCTAssertEqual(slots.map(\.row), [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1])
+        XCTAssertEqual(slots[8].column, 0)
+    }
+
+    func testAGroupWiderThanARowIsSplit() {
+        let slots = GridLayout.pack(groupSizes: [5], maxColumns: 2)
+        XCTAssertEqual(slots.map(\.row), [0, 0, 1, 1, 2])
+    }
+}

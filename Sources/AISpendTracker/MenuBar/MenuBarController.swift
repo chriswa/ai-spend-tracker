@@ -202,6 +202,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // there's something to draw (nothing enabled / nothing fetched → omit the header).
         let circles = PieChart.circles(from: vm, now: now, errorStyle: .staleData)
         if !circles.isEmpty {
+            ringsHeader.maxWidth = headerMaxWidth
             ringsHeader.circles = circles
             ringsHeader.setFrameSize(NSSize(width: ringsHeader.preferredWidth, height: ringsHeader.preferredHeight))
             let headerItem = Self.disabledItem("")
@@ -217,6 +218,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if vm.hasAnySpend { addSpendSection(); menu.addItem(.separator()) }
 
         addFooter()
+    }
+
+    /// The widest the rings header may be. macOS caps a menu's window at about 1036pt
+    /// (measured on macOS 27, whatever the screen size); a wider custom view is clipped
+    /// and every text item is truncated to an ellipsis. A small screen limits it further.
+    private static let menuWidthLimit: CGFloat = 960
+    private var headerMaxWidth: CGFloat {
+        let screen = statusItem.button?.window?.screen ?? NSScreen.main
+        return min(Self.menuWidthLimit, (screen?.visibleFrame.width ?? .greatestFiniteMagnitude) - 40)
     }
 
     /// A status line for a provider that isn't drawing healthy columns — an error
@@ -284,19 +294,23 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         menu.addItem(Self.disabledItem(summary))
 
+        let now = Date()
         for p in vm.providers {
-            guard let spend = p.snapshot?.spend else { continue }
-            // Show the reconstructed calendar-month figure, not the raw provider reading;
-            // a ⚠︎ marks a month whose figure may be off (sticky until the next rollover —
-            // the "Spend Breakdown" submenu says why).
-            let cents = p.reconstructedSpend?.monthSpendCents ?? spend.usedCents
-            let warn = (p.reconstructedSpend?.isMonthUncertain ?? false) ? " ⚠︎" : ""
-            let shown = UsageMath.formatDollars(cents)
-            // Jev's spend accrues in tiny increments; while it still rounds to $0.00,
-            // also show the exact figure so it's visibly ticking.
-            let exact = p.id == .jev && cents > 0 && shown == UsageMath.formatDollars(0)
-                ? " (\(UsageMath.formatDollarsExact(cents)))" : ""
-            menu.addItem(Self.disabledItem("  \(spend.label): \(shown)\(exact)\(warn)"))
+            for a in p.accounts {
+                guard let spend = a.snapshot.spend else { continue }
+                // Show the reconstructed calendar-month figure, not the raw provider reading;
+                // a ⚠︎ marks a month whose figure may be off (sticky until the next rollover —
+                // the "Spend Breakdown" submenu says why).
+                let cents = a.monthSpendCents(now: now) ?? spend.usedCents
+                let warn = (a.reconstructedSpend?.isMonthUncertain ?? false) ? " ⚠︎" : ""
+                let shown = UsageMath.formatDollars(cents)
+                // Jev's spend accrues in tiny increments; while it still rounds to $0.00,
+                // also show the exact figure so it's visibly ticking.
+                let exact = p.id == .jev && cents > 0 && shown == UsageMath.formatDollars(0)
+                    ? " (\(UsageMath.formatDollarsExact(cents)))" : ""
+                let label = a.account.map { "\(spend.label) (\($0.label))" } ?? spend.label
+                menu.addItem(Self.disabledItem("  \(label): \(shown)\(exact)\(warn)"))
+            }
         }
         // The audit lives with the spend readout it explains, above the config rule.
         addSpendBreakdownSubmenu()
@@ -310,16 +324,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let root = NSMenuItem(title: "Spend Breakdown", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         var any = false
-        for p in vm.providers {
-            guard let spend = p.snapshot?.spend else { continue }
+        for (p, a) in vm.providers.flatMap({ p in p.accounts.map { (p, $0) } }) {
+            guard let spend = a.snapshot.spend else { continue }
             any = true
-            let header = Self.disabledItem(p.displayName)
-            header.attributedTitle = NSAttributedString(string: p.displayName, attributes: [
+            let name = a.account.map { "\(p.displayName) · \($0.label)" } ?? p.displayName
+            let header = Self.disabledItem(name)
+            header.attributedTitle = NSAttributedString(string: name, attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .bold),
                 .foregroundColor: PieChart.palette(for: p.id).usage])
             sub.addItem(header)
 
-            if let e = p.reconstructedSpend {
+            if let e = a.reconstructedSpend {
                 sub.addItem(Self.disabledItem("  Counted this month: \(UsageMath.formatDollars(e.monthSpendCents))"))
                 sub.addItem(Self.disabledItem("  Provider reports (MTD): \(UsageMath.formatDollars(e.rawProviderCents))"))
                 if e.carryInCents > 0 {
@@ -362,6 +377,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         providers.submenu = sub
         menu.addItem(providers)
 
+        addScopedWindowToggles()
         addTrayStyleSubmenu()
         addSpendSubmenu()
 
@@ -377,6 +393,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         restart.target = self
         menu.addItem(restart)
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    /// A "Show Fable 7-Day" checkbox per per-model window any account reports, hiding
+    /// that window's circles from the tray and the dropdown (still in `--json`).
+    private func addScopedWindowToggles() {
+        for caption in vm.scopedWindowCaptions {
+            let item = NSMenuItem(title: "Show \(caption)", action: #selector(toggleScopedWindow(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = caption
+            item.state = vm.hiddenScopedWindows.contains(caption) ? .off : .on
+            menu.addItem(item)
+        }
     }
 
     /// The "Tray Style" submenu: a Rings/Bars radio group for the shape every window
@@ -433,6 +461,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleProvider(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let id = ProviderID(rawValue: raw) else { return }
         onSetProvider?(id, sender.state != .on)
+    }
+
+    @objc private func toggleScopedWindow(_ sender: NSMenuItem) {
+        guard let caption = sender.representedObject as? String else { return }
+        if sender.state == .on { vm.hiddenScopedWindows.insert(caption) } else { vm.hiddenScopedWindows.remove(caption) }
+        Settings.hiddenScopedWindows = vm.hiddenScopedWindows
+        Log.log("windows: hidden = \(vm.hiddenScopedWindows.sorted())")
+        rebuildMenu(now: Date())
+        redraw(now: Date())
     }
 
     /// Switch the tray between rings and bars, persist it, and repaint.

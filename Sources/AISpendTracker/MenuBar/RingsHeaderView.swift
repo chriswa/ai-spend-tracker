@@ -2,7 +2,8 @@ import AppKit
 
 /// A dropdown-menu header that shows a large version of the same circles drawn in
 /// the status bar, laid out side by side. Under each ring, top to bottom: a heading
-/// (the provider name, or the dollar value for the spend pie), the caption ("5-Hour",
+/// (the provider name, or the dollar value for the spend pie), the account row when any
+/// provider reports accounts (the signed-in account underlined), the caption ("5-Hour",
 /// "Spend", …), "Usage: n%" / "Elapsed: n%" lines, a "Reset: …" countdown, a
 /// column-width sparkline of that metric's recent rate, and an "Updated: …" line (how
 /// long ago that provider last fetched). Hover tooltips carry the extra detail:
@@ -12,15 +13,41 @@ import AppKit
 /// list (built with `errorStyle: .staleData`, so an errored provider appears here as its
 /// dimmed last-good pies, marked with a ⚠︎, rather than the tray's alert glyph). Draws
 /// nothing until `circles` is set.
+///
+/// Columns wrap onto further rows rather than grow past `maxWidth`, breaking between
+/// groups (a provider account's windows, the spend pie) so a group stays on one row
+/// whenever it fits.
 @MainActor
 final class RingsHeaderView: NSView {
     /// The circles to render (in order); text/values/series come from each `Circle`.
     var circles: [PieChart.Circle] = [] {
-        didSet {
-            setFrameSize(NSSize(width: preferredWidth, height: preferredHeight))
-            rebuildTooltips()
-            needsDisplay = true
-        }
+        didSet { relayout() }
+    }
+
+    /// The widest the header may grow — beyond the menu's maximum width AppKit clips the
+    /// header and truncates every other menu item. Set by `MenuBarController`.
+    var maxWidth: CGFloat = .greatestFiniteMagnitude {
+        didSet { if maxWidth != oldValue { relayout() } }
+    }
+
+    /// Each circle's (row, column) position, from `GridLayout.pack`.
+    private var slots: [GridLayout.Slot] = []
+    private var rowCount: Int { (slots.map(\.row).max() ?? -1) + 1 }
+    private var columnsPerRow: Int { (slots.map(\.column).max() ?? -1) + 1 }
+
+    private func relayout() {
+        slots = GridLayout.pack(groupSizes: GridLayout.groupSizes(circles.map(\.startsGroup)),
+                                maxColumns: maxColumns)
+        setFrameSize(NSSize(width: preferredWidth, height: preferredHeight))
+        rebuildTooltips()
+        needsDisplay = true
+    }
+
+    /// The most columns whose row fits within `maxWidth` (at least one).
+    private var maxColumns: Int {
+        var n = max(1, circles.count)
+        while n > 1, leftMargin * 2 + rowWidth(columns: n) > maxWidth { n -= 1 }
+        return n
     }
 
     /// Invoked with a provider's raw response body when its "Updated" row is clicked.
@@ -29,11 +56,13 @@ final class RingsHeaderView: NSView {
     // Layout (points).
     private let ringDiameter: CGFloat = 42
     private let columnWidth: CGFloat = 96   // per-circle column, wide enough for "Jul 22, 1:55 PM"
-    /// Inter-column gap scales down with column count but never below `minColumnGap`,
-    /// so neighboring columns always keep a clear margin: 27pt at 2 columns, 18 at 3,
-    /// then held at the floor from 4 on. gap(n) = max(minColumnGap, 45 − 9n).
+    /// Inter-column gap scales down with the columns per row but never below
+    /// `minColumnGap`, so neighboring columns always keep a clear margin: 27pt at 2
+    /// columns, 18 at 3, then held at the floor from 4 on. gap(n) = max(minColumnGap, 45 − 9n).
     private let minColumnGap: CGFloat = 14
-    private var columnGap: CGFloat { max(minColumnGap, 45 - 9 * CGFloat(circles.count)) }
+    private func columnGap(columns n: Int) -> CGFloat { max(minColumnGap, 45 - 9 * CGFloat(n)) }
+    private var columnGap: CGFloat { columnGap(columns: columnsPerRow) }
+    private let rowGap: CGFloat = 14
     private let leftMargin: CGFloat = 21    // aligns with the standard menu-text indent
     private let minWidth: CGFloat = 220
     private let topPad: CGFloat = 12
@@ -48,11 +77,11 @@ final class RingsHeaderView: NSView {
     private let updatedHeight: CGFloat = 13
     private static let sparkGapThreshold: TimeInterval = 8 * 60
 
-    private var groupWidth: CGFloat {
-        guard !circles.isEmpty else { return 0 }
-        return CGFloat(circles.count) * columnWidth + CGFloat(circles.count - 1) * columnGap
+    private func rowWidth(columns n: Int) -> CGFloat {
+        guard n > 0 else { return 0 }
+        return CGFloat(n) * columnWidth + CGFloat(n - 1) * columnGap(columns: n)
     }
-    var preferredWidth: CGFloat { max(minWidth, leftMargin + groupWidth + leftMargin) }
+    var preferredWidth: CGFloat { max(minWidth, leftMargin + rowWidth(columns: columnsPerRow) + leftMargin) }
     /// Everything between the ring's bottom and the sparkline's top: heading, caption,
     /// and the three stat lines (Usage, Elapsed, Reset countdown), each preceded by its
     /// gap. The reset line is the last text line, so its bottom sits at
@@ -60,16 +89,26 @@ final class RingsHeaderView: NSView {
     /// and the sparkline placement so they can't drift.
     private var textBlockHeight: CGFloat {
         captionGap + headingHeight
+            + (hasAccountRow ? lineGap + accountHeight : 0)
             + lineGap + captionHeight
             + lineGap + statHeight   // Usage
             + lineGap + statHeight   // Elapsed
             + lineGap + statHeight   // Reset countdown
     }
+    /// One row of columns, from the top of the ring to the bottom of the "Updated" line.
+    private var rowHeight: CGFloat {
+        ringDiameter + textBlockHeight + sparkTopGap + sparkHeight + updatedTopGap + updatedHeight
+    }
     var preferredHeight: CGFloat {
-        topPad + ringDiameter + textBlockHeight + sparkTopGap + sparkHeight
-            + updatedTopGap + updatedHeight + bottomPad
+        let rows = CGFloat(max(1, rowCount))
+        return topPad + rows * rowHeight + (rows - 1) * rowGap + bottomPad
     }
     private let bottomPad: CGFloat = 8
+    private let accountHeight: CGFloat = 13
+
+    /// The account row is laid out only when some column names an account, so a user
+    /// with a single login of every provider sees no empty row.
+    private var hasAccountRow: Bool { circles.contains { $0.accountLabel != nil } }
 
     private static let captionAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
@@ -79,6 +118,15 @@ final class RingsHeaderView: NSView {
     /// the whole column reads as inactive, reinforcing the dimmed pie and the ⚠︎ heading.
     private static let captionAttrsStale: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+        .foregroundColor: NSColor.secondaryLabelColor,
+    ]
+    /// The account row: the signed-in account in the label color, the others grayed.
+    private static let accountAttrsActive: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
+        .foregroundColor: NSColor.labelColor,
+    ]
+    private static let accountAttrsInactive: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
         .foregroundColor: NSColor.secondaryLabelColor,
     ]
     private static let statAttrs: [NSAttributedString.Key: Any] = [
@@ -97,8 +145,8 @@ final class RingsHeaderView: NSView {
         let now = Date()
 
         for (i, circle) in circles.enumerated() {
-            let colX = leftMargin + CGFloat(i) * (columnWidth + columnGap)
             let rects = columnRects(index: i)
+            let colX = rects.column
             PieChart.draw(circle, in: rects.ring)
 
             // Text lines, top-down, each centered in the column.
@@ -112,6 +160,21 @@ final class RingsHeaderView: NSView {
                 ]
                 drawLine(circle.isStale ? "\(heading) ⚠︎" : heading,
                          attrs: attrs, columnX: colX, bottomY: y, height: headingHeight)
+            }
+            if hasAccountRow {
+                y -= lineGap + accountHeight
+                if let account = circle.accountLabel {
+                    drawLine(account, attrs: circle.marksActiveAccount ? Self.accountAttrsActive : Self.accountAttrsInactive,
+                             columnX: colX, bottomY: y, height: accountHeight)
+                }
+                // Underline the active account across its columns, bridging the gap to
+                // the next column when it belongs to the same run (as in the tray).
+                if circle.marksActiveAccount {
+                    let continues = i + 1 < circles.count && circles[i + 1].marksActiveAccount
+                        && slots[i + 1].row == slots[i].row
+                    NSColor.labelColor.setFill()
+                    NSRect(x: colX, y: y - 1, width: columnWidth + (continues ? columnGap : 0), height: 1).fill()
+                }
             }
             y -= lineGap + captionHeight
             drawLine(circle.caption, attrs: circle.isStale ? Self.captionAttrsStale : Self.captionAttrs,
@@ -155,9 +218,11 @@ final class RingsHeaderView: NSView {
     /// The ring, reset-line, sparkline, and updated-line frames for column `i`, derived
     /// purely from the fixed layout so `draw`, `rebuildTooltips`, and click hit-testing
     /// place their targets identically.
-    private func columnRects(index i: Int) -> (ring: NSRect, reset: NSRect, spark: NSRect, updated: NSRect) {
-        let ringY = bounds.height - topPad - ringDiameter
-        let colX = leftMargin + CGFloat(i) * (columnWidth + columnGap)
+    private func columnRects(index i: Int) -> (column: CGFloat, ring: NSRect, reset: NSRect,
+                                               spark: NSRect, updated: NSRect) {
+        let slot = slots[i]
+        let ringY = bounds.height - topPad - CGFloat(slot.row) * (rowHeight + rowGap) - ringDiameter
+        let colX = leftMargin + CGFloat(slot.column) * (columnWidth + columnGap)
         let ring = NSRect(x: colX + (columnWidth - ringDiameter) / 2, y: ringY,
                           width: ringDiameter, height: ringDiameter)
         let reset = NSRect(x: colX, y: ringY - textBlockHeight, width: columnWidth, height: statHeight)
@@ -165,7 +230,7 @@ final class RingsHeaderView: NSView {
                            width: columnWidth, height: sparkHeight)
         let updated = NSRect(x: colX, y: spark.minY - updatedTopGap - updatedHeight,
                              width: columnWidth, height: updatedHeight)
-        return (ring, reset, spark, updated)
+        return (colX, ring, reset, spark, updated)
     }
 
     /// Live tooltip text keyed by the tag `addToolTip` returns. `addToolTip` does not
@@ -246,5 +311,37 @@ extension RingsHeaderView: NSViewToolTipOwner {
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
               point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
         toolTipStrings[tag] ?? ""
+    }
+}
+
+/// Packs header columns into rows: groups are placed left to right and a group that
+/// doesn't fit in the current row's remaining room starts a new row. A group wider than
+/// a whole row is split across rows.
+enum GridLayout {
+    struct Slot: Equatable { var row: Int; var column: Int }
+
+    /// Group sizes from each circle's `startsGroup` flag (a leading circle without the
+    /// flag still opens the first group).
+    static func groupSizes(_ startsGroup: [Bool]) -> [Int] {
+        var sizes: [Int] = []
+        for (i, starts) in startsGroup.enumerated() {
+            if starts || i == 0 { sizes.append(1) } else { sizes[sizes.count - 1] += 1 }
+        }
+        return sizes
+    }
+
+    static func pack(groupSizes: [Int], maxColumns: Int) -> [Slot] {
+        let width = max(1, maxColumns)
+        var slots: [Slot] = []
+        var row = 0, column = 0
+        for size in groupSizes {
+            if column > 0, column + size > width { row += 1; column = 0 }
+            for _ in 0..<size {
+                if column == width { row += 1; column = 0 }
+                slots.append(Slot(row: row, column: column))
+                column += 1
+            }
+        }
+        return slots
     }
 }

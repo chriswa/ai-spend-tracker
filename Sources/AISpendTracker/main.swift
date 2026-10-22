@@ -9,7 +9,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"),
 
 // Print the current readings as JSON and exit (no menu bar). See `UsageReport`.
 if CommandLine.arguments.contains("--json") {
-    UsageReport.run()
+    UsageReport.run(includeInactiveAccounts: CommandLine.arguments.contains("--all-accounts"))
     exit(0)
 }
 

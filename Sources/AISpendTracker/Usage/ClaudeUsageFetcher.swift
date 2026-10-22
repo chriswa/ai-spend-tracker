@@ -6,6 +6,9 @@ import Foundation
 ///     fuss; the item's ACL trusts /usr/bin/security);
 ///   • GET https://api.anthropic.com/api/oauth/usage with the OAuth bearer token.
 ///
+/// Each reading is tagged with the signed-in account (see `readSignedInAccount`), so
+/// switching between, say, a personal plan and a Team seat keeps each one's windows apart.
+///
 /// Cadence: the caller must not fetch more than once per 5 minutes.
 final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
     let id: ProviderID = .claude
@@ -24,6 +27,11 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
     /// `security` failed for another reason (keychain locked, prompt dismissed,
     /// etc.). `detail` carries the tool's stderr.
     struct KeychainError: Error { let detail: String }
+    /// `~/.claude.json` has no signed-in account to attribute the reading to.
+    struct UnknownAccountError: Error {}
+    /// The signed-in account changed while we were fetching (a `/login` mid-request), so
+    /// the token and the account it was read under may not match. Retried next cooldown.
+    struct AccountChangedError: Error {}
     /// The usage endpoint returned a non-2xx status.
     struct UsageAPIError: Error, RawResponseCarrying {
         let status: Int
@@ -51,6 +59,7 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
     }
 
     func fetch() async throws -> FetchResult {
+        let account = try Self.readSignedInAccount()
         let token = try Self.readAccessToken()
 
         var req = URLRequest(url: Self.usageURL, timeoutInterval: Self.timeout)
@@ -68,11 +77,18 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
         guard (200..<300).contains(http.statusCode) else {
             throw UsageAPIError(status: http.statusCode, body: raw)
         }
+        var snapshot: ProviderSnapshot
         do {
-            return FetchResult(snapshot: try Self.decode(data), raw: raw)
+            snapshot = try Self.decode(data)
         } catch {
             throw ResponseParseError(rawResponse: raw, underlying: error)
         }
+        // Claude Code rewrites the Keychain token and ~/.claude.json separately on login,
+        // so only trust the attribution if the account is the same on both sides of the
+        // request. A mismatch would file one account's usage under the other.
+        guard try Self.readSignedInAccount().id == account.id else { throw AccountChangedError() }
+        snapshot.account = account
+        return FetchResult(snapshot: snapshot, raw: raw)
     }
 
     func classify(_ error: Error) -> String {
@@ -83,6 +99,10 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
             return "No Claude subscription credentials in Keychain (API-key account?)"
         case let e as KeychainError:
             return "Keychain read failed: \(e.detail)"
+        case is UnknownAccountError:
+            return "Couldn't tell which Claude account is signed in (~/.claude.json)"
+        case is AccountChangedError:
+            return "Claude account changed during the fetch"
         case let e as UsageAPIError:
             return e.userMessage
         case let e as URLError:
@@ -113,6 +133,32 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
             throw NoOAuthCredentialsError()
         }
         return token
+    }
+
+    // MARK: - Account
+
+    private static let claudeConfigURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".claude.json")
+
+    /// The account Claude Code is signed into, from the `oauthAccount` block Claude Code
+    /// writes to `~/.claude.json` on every login.
+    private static func readSignedInAccount() throws -> AccountRef {
+        guard let data = try? Data(contentsOf: claudeConfigURL),
+              let account = parseAccount(fromClaudeConfig: data) else { throw UnknownAccountError() }
+        return account
+    }
+
+    /// The account is keyed by organization: a personal plan and a Team seat share one
+    /// user (same email, same account UUID) but are separate organizations with separate
+    /// rate limits. A personal plan's organization is auto-named "<email>'s Organization",
+    /// which is labeled "Personal"; any other organization goes by its name.
+    static func parseAccount(fromClaudeConfig data: Data) -> AccountRef? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = json["oauthAccount"] as? [String: Any],
+              let orgID = oauth["organizationUuid"] as? String, !orgID.isEmpty else { return nil }
+        let name = (oauth["organizationName"] as? String) ?? ""
+        let label = name.isEmpty || name.hasSuffix("'s Organization") ? "Personal" : name
+        return AccountRef(id: orgID, label: label)
     }
 
     // MARK: - Decode

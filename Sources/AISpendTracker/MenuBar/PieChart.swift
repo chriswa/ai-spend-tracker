@@ -155,6 +155,13 @@ enum PieChart {
         /// without re-deriving ownership from captions. Tray-only; the header spaces its
         /// columns evenly.
         var startsGroup: Bool
+        /// The account this circle's reading belongs to, drawn on its own row under the
+        /// heading in the dropdown header. Nil for providers without accounts. Header-only.
+        var accountLabel: String?
+        /// Whether this circle belongs to the currently signed-in account of a provider
+        /// that has more than one. The tray and header underline each run of these, so
+        /// the active account stands out from the others' carried-forward readings.
+        var marksActiveAccount: Bool
 
         init(kind: Kind, rawResponse: String? = nil, heading: String? = nil, caption: String,
              usageColor: NSColor, timeColor: NSColor, overColor: NSColor = .white,
@@ -162,7 +169,8 @@ enum PieChart {
              spark: [(Date, Double)] = [],
              resetsAt: Date? = nil, lastUpdated: Date? = nil,
              pieTooltip: String? = nil, sparkTooltip: String? = nil,
-             isStale: Bool = false, startsGroup: Bool = false) {
+             isStale: Bool = false, startsGroup: Bool = false,
+             accountLabel: String? = nil, marksActiveAccount: Bool = false) {
             self.kind = kind
             self.rawResponse = rawResponse
             self.heading = heading
@@ -178,6 +186,8 @@ enum PieChart {
             self.sparkTooltip = sparkTooltip
             self.isStale = isStale
             self.startsGroup = startsGroup
+            self.accountLabel = accountLabel
+            self.marksActiveAccount = marksActiveAccount
         }
     }
 
@@ -191,13 +201,16 @@ enum PieChart {
     enum ErrorStyle { case glyph, staleData }
 
     /// The ordered circles for a tray view model: each enabled provider's window pies,
-    /// then the combined spend pie when any provider reports spend. A provider that
-    /// hasn't fetched yet contributes nothing. An errored provider renders per
-    /// `errorStyle` — a single warning glyph (tray) or its dimmed last-good pies (header).
+    /// one group per account in first-detected order, then the combined spend pie when
+    /// any provider reports spend. A provider that hasn't fetched yet contributes
+    /// nothing. An errored provider's active account renders per `errorStyle` — a single
+    /// warning glyph (tray) or its dimmed last-good pies (header); its other accounts'
+    /// carried-forward readings are unaffected.
     ///
-    /// Each window's time wedge is computed at *that provider's* last-fetch moment
-    /// (`lastUpdated`), not the live clock, so time never races ahead of the frozen
-    /// usage reading and the time-vs-usage comparison stays fair between fetches.
+    /// The active account's time wedges are computed at its last-fetch moment, not the
+    /// live clock, so time never races ahead of the frozen usage reading and the
+    /// time-vs-usage comparison stays fair between fetches. Other accounts are carried
+    /// forward to now (see `AccountView`).
     ///
     /// `includeSpend` gates the trailing spend pie: the tray drops it in text/off
     /// display mode (the figure is drawn as the button title instead, or hidden),
@@ -207,15 +220,21 @@ enum PieChart {
         var out: [Circle] = []
         for p in vm.providers {
             let pal = palette(for: p.id)
-            if p.error != nil, errorStyle == .staleData, let snap = p.snapshot, !snap.windows.isEmpty {
-                out += windowCircles(for: p, snapshot: snap, providerPalette: pal, now: now, stale: true)
-            } else if p.error != nil {
-                out.append(Circle(kind: .error, rawResponse: p.lastRawResponse,
-                                  heading: p.displayName, caption: "unavailable",
-                                  usageColor: pal.usage, timeColor: pal.time, lastUpdated: p.lastUpdated,
-                                  startsGroup: true))
-            } else if let snap = p.snapshot {
-                out += windowCircles(for: p, snapshot: snap, providerPalette: pal, now: now, stale: false)
+            let errorGlyph = Circle(kind: .error, rawResponse: p.lastRawResponse,
+                                    heading: p.displayName, caption: "unavailable",
+                                    usageColor: pal.usage, timeColor: pal.time, lastUpdated: p.lastUpdated,
+                                    startsGroup: true, accountLabel: p.activeAccount?.account?.label,
+                                    marksActiveAccount: p.hasMultipleAccounts)
+            if p.error != nil, p.activeAccount == nil { out.append(errorGlyph) }
+            for a in p.accounts {
+                let hidden = vm.hiddenScopedWindows
+                if !a.isActive || p.error == nil {
+                    out += windowCircles(for: p, account: a, providerPalette: pal, now: now, stale: false, hidden: hidden)
+                } else if errorStyle == .staleData, !a.snapshot.windows.isEmpty {
+                    out += windowCircles(for: p, account: a, providerPalette: pal, now: now, stale: true, hidden: hidden)
+                } else {
+                    out.append(errorGlyph)
+                }
             }
         }
         if includeSpend && vm.hasAnySpend {
@@ -240,28 +259,36 @@ enum PieChart {
         return out
     }
 
-    /// One pie per window in a provider's snapshot, sharing the exact same layout for
-    /// live and stale readings. When `stale` is set the palette is dimmed and the circle
-    /// is flagged `isStale`, so a best-effort reading after a failed fetch differs from a
-    /// healthy one only in appearance — never in which columns or detail it shows.
-    private static func windowCircles(for p: ProviderView, snapshot snap: ProviderSnapshot,
-                                      providerPalette pal: Palette, now: Date, stale: Bool) -> [Circle] {
-        let at = p.lastUpdated ?? now
-        return snap.windows.enumerated().map { i, w in
-            let series = p.series(forWindow: w.caption)
+    /// One pie per window in an account's reading, sharing the exact same layout for
+    /// live, stale and carried-forward readings. When `stale` is set the palette is dimmed
+    /// and the circle is flagged `isStale`, so a best-effort reading after a failed fetch
+    /// differs from a healthy one only in appearance — never in which columns or detail
+    /// it shows. Per-model windows whose caption is in `hidden` are left out.
+    private static func windowCircles(for p: ProviderView, account a: AccountView,
+                                      providerPalette pal: Palette, now: Date, stale: Bool,
+                                      hidden: Set<String>) -> [Circle] {
+        let at = a.timeAnchor(now: now)
+        let shown = a.windows(now: now).filter { !($0.isScoped && hidden.contains($0.caption)) }
+        return shown.enumerated().map { i, w in
+            let series = p.series(forWindow: w.caption, account: a.account)
             let base = w.isScoped ? scopedPalette : pal
             let wpal = stale ? dimmed(base) : base
+            let pieTooltip = a.isActive
+                ? UsageMath.projectedText(w, now: at)
+                : a.lastUpdated.map { "Last read \(UsageMath.formatAgoShort(since: $0, now: now)) ago; assumes no use since" }
             return Circle(
                 kind: .pie(time: UsageMath.timeFraction(w.timeBasis, resetsAt: w.resetsAt, now: at),
                            usage: UsageMath.usageFraction(utilization: w.utilization)),
-                rawResponse: p.lastRawResponse, heading: p.displayName, caption: w.caption,
+                rawResponse: a.isActive ? p.lastRawResponse : nil, heading: p.displayName, caption: w.caption,
                 usageColor: wpal.usage, timeColor: wpal.time, overColor: wpal.over,
                 spark: series,
                 resetsAt: w.resetsAt,
-                lastUpdated: p.lastUpdated,
-                pieTooltip: UsageMath.projectedText(w, now: at),
+                lastUpdated: a.lastUpdated,
+                pieTooltip: pieTooltip,
                 sparkTooltip: UsageMath.recentPeakText(series, unit: .percent),
-                isStale: stale, startsGroup: i == 0)
+                isStale: stale, startsGroup: i == 0,
+                accountLabel: a.account?.label,
+                marksActiveAccount: a.isActive && p.hasMultipleAccounts)
         }
     }
 

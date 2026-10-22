@@ -14,15 +14,19 @@ final class UsageHistory {
     /// A single point in time. `windows` maps a window caption ("5-Hour", "Weekly",
     /// "Monthly", …) to its utilization %; `spendCents` is month-to-date dollars×100.
     /// Both are optional-friendly (a partial fetch still records what it had).
+    /// `account` is the reading's `AccountRef.id`, nil for providers without accounts.
     struct Sample: Codable, Equatable {
         var date: Date
         var windows: [String: Double]
         var spendCents: Double?
+        var account: String?
 
-        init(date: Date, windows: [String: Double] = [:], spendCents: Double? = nil) {
+        init(date: Date, windows: [String: Double] = [:], spendCents: Double? = nil,
+             account: String? = nil) {
             self.date = date
             self.windows = windows
             self.spendCents = spendCents
+            self.account = account
         }
     }
 
@@ -52,7 +56,8 @@ final class UsageHistory {
     func record(_ snapshot: ProviderSnapshot, now: Date = Date()) {
         var windows: [String: Double] = [:]
         for w in snapshot.windows { windows[w.caption] = w.utilization }
-        let sample = Sample(date: now, windows: windows, spendCents: snapshot.spend?.usedCents)
+        let sample = Sample(date: now, windows: windows, spendCents: snapshot.spend?.usedCents,
+                            account: snapshot.account?.id)
         samples.append(sample)
         append(sample)
         if let oldest = samples.first, now.timeIntervalSince(oldest.date) > retention + compactionSlack {

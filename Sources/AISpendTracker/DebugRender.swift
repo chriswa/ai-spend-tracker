@@ -121,7 +121,7 @@ enum DebugRender {
             // Rings are the style whose hairline adapts to the backdrop, so they are what
             // this check needs to draw.
             let lightTray = TrayRings.trayImage(from: TrayViewModel(providers: [claude], customLimitCents: 250000),
-                                                now: now0, outline: PieChart.outline(forDark: false))
+                                                now: now0, isDark: false)
             let ls: CGFloat = 3
             lightTray.draw(in: NSRect(x: lightBar.minX + 10,
                                       y: lightBar.minY + (lightBar.height - lightTray.size.height * ls) / 2,
@@ -157,12 +157,29 @@ enum DebugRender {
             }
         }
 
+        // Two Claude accounts: the signed-in one, then a Team seat last read an hour ago
+        // and carried forward (its 5-hour window still capped until it resets).
+        let personal = AccountRef(id: "personal", label: "Personal")
+        let team = AccountRef(id: "team", label: "Spare")
+        let personalSnap = ProviderSnapshot(windows: [
+            UsageWindow(caption: "5-Hour", utilization: 8, resetsAt: now.addingTimeInterval(4 * 3600),
+                        timeBasis: .rollingWindow(length: WindowLength.fiveHour)),
+            UsageWindow(caption: "7-Day", utilization: 2, resetsAt: now.addingTimeInterval(2 * 24 * 3600),
+                        timeBasis: .rollingWindow(length: WindowLength.sevenDay)),
+        ], account: personal)
+        let teamSnap = ProviderSnapshot(windows: [
+            UsageWindow(caption: "5-Hour", utilization: 100, resetsAt: now.addingTimeInterval(1.5 * 3600),
+                        timeBasis: .rollingWindow(length: WindowLength.fiveHour)),
+            UsageWindow(caption: "7-Day", utilization: 60, resetsAt: now.addingTimeInterval(6 * 24 * 3600),
+                        timeBasis: .rollingWindow(length: WindowLength.sevenDay)),
+        ], spend: SpendInfo(usedCents: 12345, apiLimitCents: 50000, label: "Claude extra usage"), account: team)
         let claude = ProviderView(id: .claude, displayName: "Claude",
-            snapshot: ProviderSnapshot(windows: [
-                UsageWindow(caption: "5-Hour", utilization: 113, resetsAt: now.addingTimeInterval(2 * 3600),
-                            timeBasis: .rollingWindow(length: WindowLength.fiveHour)),
-            ], spend: SpendInfo(usedCents: 12345, apiLimitCents: 50000, label: "Claude extra usage")),
-            lastUpdated: now, history: history("5-Hour", 30, spend: 900))
+            snapshot: personalSnap, lastUpdated: now,
+            accounts: [
+                AccountView(account: team, snapshot: teamSnap, lastUpdated: now.addingTimeInterval(-3600),
+                            isActive: false),
+                AccountView(account: personal, snapshot: personalSnap, lastUpdated: now, isActive: true),
+            ])
         let cursor = ProviderView(id: .cursor, displayName: "Cursor",
             snapshot: ProviderSnapshot(windows: [
                 UsageWindow(caption: "Weekly", utilization: 40,
@@ -182,9 +199,16 @@ enum DebugRender {
             (.aqua, 0.96, "-header-light.png"),
         ]
         let base = (baseOutPath as NSString).deletingPathExtension
+        let trayCircles = PieChart.circles(from: vm, now: now)
+        writeScaled(TrayBars.image(circles: trayCircles, isDark: true), scale: 4, background: 0.12,
+                    to: base + "-tray-bars.png")
+        writeScaled(TrayRings.image(circles: trayCircles, isDark: false), scale: 4, background: 0.92,
+                    to: base + "-tray-rings-light.png")
         for (name, bg, suffix) in themes {
             let header = RingsHeaderView(frame: .zero)
             header.appearance = NSAppearance(named: name)
+            // Narrow enough that the columns wrap, so the multi-row layout is checked too.
+            header.maxWidth = 560
             header.circles = PieChart.circles(from: vm, now: now, errorStyle: .staleData)
             header.setFrameSize(NSSize(width: header.preferredWidth, height: header.preferredHeight))
             guard let rep = header.bitmapImageRepForCachingDisplay(in: header.bounds) else { continue }
@@ -201,6 +225,22 @@ enum DebugRender {
             try? png.write(to: URL(fileURLWithPath: path))
             FileHandle.standardError.write(Data("render: wrote \(path)\n".utf8))
         }
+    }
+
+    /// Write `image` scaled up over a menu-bar-colored backdrop, for eyeballing tray glyphs.
+    @MainActor
+    private static func writeScaled(_ image: NSImage, scale: CGFloat, background: CGFloat, to path: String) {
+        let size = NSSize(width: image.size.width * scale + 20, height: image.size.height * scale + 20)
+        let out = NSImage(size: size, flipped: false) { rect in
+            NSColor(white: background, alpha: 1).setFill()
+            rect.fill()
+            image.draw(in: NSRect(x: 10, y: 10, width: image.size.width * scale, height: image.size.height * scale))
+            return true
+        }
+        guard let tiff = out.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff),
+              let png = bmp.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
+        FileHandle.standardError.write(Data("render: wrote \(path)\n".utf8))
     }
 
     private static func drawLabel(_ text: String, centeredIn rect: NSRect) {

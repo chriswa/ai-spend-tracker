@@ -107,7 +107,9 @@ final class SpendLedger {
     /// prevents the double-counting a naive "any decrease is a reset" rule would cause.
     nonisolated static let resetDropFraction = 0.5
 
-    private var entries: [ProviderID: Entry]
+    /// Keyed by `key(_:account:)`: one ledger per provider, or per provider account for a
+    /// provider that reports accounts — each account is billed separately.
+    private var entries: [String: Entry]
     private let fileURL: URL
 
     init(fileURL: URL? = nil) {
@@ -115,9 +117,8 @@ final class SpendLedger {
         var retiredMaskedResetWarning = false
         if let raw = try? Data(contentsOf: self.fileURL),
            let decoded = try? JSONDecoder().decode([String: Entry].self, from: raw) {
-            entries = Dictionary(uniqueKeysWithValues: decoded.compactMap { pair in
-                let key = pair.key
-                var value = pair.value
+            entries = decoded.mapValues { entry in
+                var value = entry
                 // Older versions marked any long Claude polling gap as uncertain. Those
                 // gaps are routine (for example, a sleeping laptop), so retire only that
                 // obsolete persisted warning while preserving every other uncertainty.
@@ -128,8 +129,8 @@ final class SpendLedger {
                     value.lowConfidence = false
                     value.confidenceNote = nil
                 }
-                return ProviderID(rawValue: key).map { ($0, value) }
-            })
+                return value
+            }
         } else {
             entries = [:]
         }
@@ -139,21 +140,29 @@ final class SpendLedger {
         if retiredMaskedResetWarning { save() }
     }
 
-    /// The last reconstructed entry for a provider (for display on launch, before any
-    /// fresh fetch has been ingested this session). Nil until the provider has reported
-    /// spend at least once.
-    func entry(_ id: ProviderID) -> Entry? { entries[id] }
+    /// Persistence key: the provider's raw value, suffixed with the account id when the
+    /// reading names an account ("claude:<org uuid>").
+    nonisolated static func key(_ id: ProviderID, account: AccountRef?) -> String {
+        account.map { "\(id.rawValue):\($0.id)" } ?? id.rawValue
+    }
+
+    /// The last reconstructed entry for a provider account (for display on launch, before
+    /// any fresh fetch has been ingested this session). Nil until it has reported spend.
+    func entry(_ id: ProviderID, account: AccountRef? = nil) -> Entry? {
+        entries[Self.key(id, account: account)]
+    }
 
     /// Fold a fresh reading into the ledger and return the updated entry. Must be called
     /// **once per new sample, in time order** — the reconstruction is stateful. (On
     /// launch we display `entry(_:)` from disk instead of re-ingesting the cached
     /// snapshot, which would double-count.)
     @discardableResult
-    func ingest(_ id: ProviderID, spend: SpendInfo, now: Date = Date()) -> Entry {
-        let updated = Self.reconstruct(prior: entries[id], rawCents: spend.usedCents,
+    func ingest(_ id: ProviderID, account: AccountRef? = nil, spend: SpendInfo, now: Date = Date()) -> Entry {
+        let key = Self.key(id, account: account)
+        let updated = Self.reconstruct(prior: entries[key], rawCents: spend.usedCents,
                                        cycleResetsAt: spend.cycleResetsAt,
                                        isLocalCalendarMonth: spend.isLocalCalendarMonth ?? false, now: now)
-        entries[id] = updated
+        entries[key] = updated
         save()
         return updated
     }
@@ -307,8 +316,7 @@ final class SpendLedger {
     }
 
     private func save() {
-        let encodable = Dictionary(uniqueKeysWithValues: entries.map { ($0.key.rawValue, $0.value) })
-        guard let raw = try? JSONEncoder().encode(encodable) else { return }
+        guard let raw = try? JSONEncoder().encode(entries) else { return }
         try? raw.write(to: fileURL, options: .atomic)
     }
 }

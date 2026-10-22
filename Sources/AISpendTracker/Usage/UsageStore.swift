@@ -7,8 +7,19 @@ import Foundation
 /// transient-error glyphs. On launch we reuse this cache and only fetch a
 /// provider once its cooldown since the last *attempt* has elapsed. Keyed by
 /// `ProviderID` so providers are independent.
+///
+/// For a provider that reports which account it read (`ProviderSnapshot.account`), the
+/// store also keeps the last reading of *every* account seen, in the order each was first
+/// detected, so switching accounts doesn't lose the other account's windows.
 @MainActor
 final class UsageStore {
+    /// One account's most recent successful reading.
+    struct AccountReading: Codable, Equatable {
+        var snapshot: ProviderSnapshot
+        var fetchedAt: Date
+        var account: AccountRef? { snapshot.account }
+    }
+
     /// At the normal five-minute polling cadence, this is thirty minutes of uninterrupted
     /// failures before the tray switches from the last known data to a warning glyph.
     static let visibleErrorThreshold = 6
@@ -27,6 +38,9 @@ final class UsageStore {
         /// Number of consecutive failed attempts. Optional for backwards-compatible
         /// decoding of caches written before failure streaks were tracked.
         var consecutiveErrorCount: Int?
+        /// The last reading of each account, in first-detected order. The entry matching
+        /// `snapshot.account` is the active one. Optional for older caches.
+        var accounts: [AccountReading]?
     }
     private struct Cache: Codable {
         var providers: [String: ProviderCache]
@@ -50,6 +64,15 @@ final class UsageStore {
     func lastSuccessAt(_ id: ProviderID) -> Date? { cache.providers[id.rawValue]?.lastSuccessAt }
     func snapshot(_ id: ProviderID) -> ProviderSnapshot? { cache.providers[id.rawValue]?.snapshot }
     func lastError(_ id: ProviderID) -> String? { cache.providers[id.rawValue]?.lastError }
+    /// Every account's last reading for `id`, in first-detected order. A cache written
+    /// before accounts were tracked yields its single snapshot.
+    func accountReadings(_ id: ProviderID) -> [AccountReading] {
+        guard let p = cache.providers[id.rawValue] else { return [] }
+        if let accounts = p.accounts { return accounts }
+        guard let snapshot = p.snapshot else { return [] }
+        return [AccountReading(snapshot: snapshot, fetchedAt: p.lastSuccessAt ?? .distantPast)]
+    }
+
     func consecutiveErrorCount(_ id: ProviderID) -> Int {
         cache.providers[id.rawValue]?.consecutiveErrorCount ?? 0
     }
@@ -72,7 +95,20 @@ final class UsageStore {
     /// time (freshness) and clears any persisted error, since a success means the
     /// provider is no longer in a failed state — keeping the invariant that `lastError`
     /// is non-nil iff the last attempt failed.
+    ///
+    /// The reading replaces its own account's entry, or is appended if the account is
+    /// new. An identified reading also drops any unidentified one, which can't be
+    /// attributed to either account (a reading cached before accounts were tracked).
     func saveSnapshot(_ id: ProviderID, _ snapshot: ProviderSnapshot, at date: Date) {
+        var readings = accountReadings(id)
+        if snapshot.account != nil { readings.removeAll { $0.account == nil } }
+        let reading = AccountReading(snapshot: snapshot, fetchedAt: date)
+        if let i = readings.firstIndex(where: { $0.account?.id == snapshot.account?.id }) {
+            readings[i] = reading
+        } else {
+            readings.append(reading)
+        }
+        cache.providers[id.rawValue, default: ProviderCache()].accounts = readings
         cache.providers[id.rawValue, default: ProviderCache()].snapshot = snapshot
         cache.providers[id.rawValue, default: ProviderCache()].lastSuccessAt = date
         cache.providers[id.rawValue, default: ProviderCache()].lastError = nil
@@ -117,6 +153,7 @@ enum Settings {
     private static let enabledProvidersKey = "aiut.enabledProviders"
     private static let spendDisplayKey = "aiut.spendDisplayMode"
     private static let trayStyleKey = "aiut.trayStyle"
+    private static let hiddenScopedWindowsKey = "aiut.hiddenScopedWindows"
 
     /// Default combined spend-pie total ($2500). Always set — the spend pie has a
     /// denominator even before the user customizes it.
@@ -137,6 +174,13 @@ enum Settings {
     }
 
     /// How each window is drawn in the tray (default: rings).
+    /// Captions of per-model windows (e.g. "Fable 7-Day") the user has hidden from the
+    /// tray and the dropdown. Shown by default.
+    static var hiddenScopedWindows: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: hiddenScopedWindowsKey) ?? []) }
+        set { UserDefaults.standard.set(newValue.sorted(), forKey: hiddenScopedWindowsKey) }
+    }
+
     static var trayStyle: TrayStyle {
         get { TrayStyle(rawValue: UserDefaults.standard.string(forKey: trayStyleKey) ?? "") ?? .rings }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: trayStyleKey) }

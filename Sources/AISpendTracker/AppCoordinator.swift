@@ -20,11 +20,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         let provider: UsageProvider
         let poller: UsagePoller
         let history: UsageHistory
-        var snapshot: ProviderSnapshot?
-        var lastUpdated: Date?
         var error: String?
         var lastRawResponse: String?
-        var reconstructedSpend: SpendLedger.Entry?
     }
     private var runtimes: [ProviderID: Runtime] = [:]
 
@@ -65,21 +62,18 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         guard runtimes[id] == nil else { return }
         let provider = makeProvider(id)
         let poller = UsagePoller(provider: provider, lastAttemptAt: store.lastFetchAt(id))
-        // Restore the exact last-known display state, so a restart within the cooldown
-        // isn't blank — and doesn't misrepresent the provider — while we wait to
-        // re-fetch. `lastUpdated` is the last *success* (data freshness), never the last
-        // attempt. A failed fetch is only surfaced after six consecutive failures, so
-        // short-lived outages keep their last known reading, even across a restart.
-        // Show the persisted reconstruction on launch; do NOT re-ingest the cached
-        // snapshot (it was already folded into the ledger when first fetched — replaying
-        // it would double-count). A month rollover that happened while we were closed is
-        // corrected by the first fresh fetch's `ingest`.
+        // The readings themselves are rendered straight from the store, so a restart
+        // within the cooldown shows the exact last-known state while we wait to re-fetch.
+        // A failed fetch is only surfaced after six consecutive failures, so short-lived
+        // outages keep their last known reading, even across a restart. The persisted
+        // spend reconstruction is shown as-is on launch; the cached snapshot is NOT
+        // re-ingested (it was already folded into the ledger when first fetched —
+        // replaying it would double-count). A month rollover that happened while we were
+        // closed is corrected by the first fresh fetch's `ingest`.
         runtimes[id] = Runtime(provider: provider, poller: poller,
                                history: UsageHistory(providerID: id),
-                               snapshot: store.snapshot(id), lastUpdated: store.lastSuccessAt(id),
                                error: store.visibleError(id),
-                               lastRawResponse: rawStore.raw(id),
-                               reconstructedSpend: spendLedger.entry(id))
+                               lastRawResponse: rawStore.raw(id))
 
         poller.onAttempt = { [weak self] at in self?.store.recordAttempt(id, at: at) }
         poller.onData = { [weak self] snapshot, raw in
@@ -87,15 +81,13 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             let at = Date()
             self.store.saveSnapshot(id, snapshot, at: at)
             self.rawStore.record(id, raw: raw, at: at)
-            self.runtimes[id]?.snapshot = snapshot
-            self.runtimes[id]?.lastUpdated = at
             self.runtimes[id]?.error = nil
             self.runtimes[id]?.lastRawResponse = raw
             self.runtimes[id]?.history.record(snapshot)
             // Fold this fresh reading into the calendar-month reconstruction (once per
             // new sample, in order). Providers with no spend contribute nothing.
             if let spend = snapshot.spend {
-                self.runtimes[id]?.reconstructedSpend = self.spendLedger.ingest(id, spend: spend, now: at)
+                self.spendLedger.ingest(id, account: snapshot.account, spend: spend, now: at)
             }
             self.render()
         }
@@ -138,13 +130,24 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         let providers = ProviderID.allCases.compactMap { id -> ProviderView? in
             guard let rt = runtimes[id] else { return nil }
             return ProviderView(id: id, displayName: id.displayName,
-                                snapshot: rt.snapshot, lastUpdated: rt.lastUpdated,
                                 error: rt.error, history: rt.history.recent(),
                                 lastRawResponse: rt.lastRawResponse,
-                                reconstructedSpend: rt.reconstructedSpend)
+                                accounts: Self.accountViews(id, store: store, ledger: spendLedger))
         }
         menuBar.apply(TrayViewModel(providers: providers, customLimitCents: Settings.customLimitCents,
                                     spendDisplayMode: Settings.spendDisplayMode,
-                                    trayStyle: Settings.trayStyle))
+                                    trayStyle: Settings.trayStyle,
+                                    hiddenScopedWindows: Settings.hiddenScopedWindows))
+    }
+
+    /// Every account's last reading for `id`, in first-detected order, each paired with
+    /// its spend reconstruction. The active account is the one the latest success read.
+    static func accountViews(_ id: ProviderID, store: UsageStore, ledger: SpendLedger) -> [AccountView] {
+        let active = store.snapshot(id)?.account
+        return store.accountReadings(id).map { r in
+            AccountView(account: r.account, snapshot: r.snapshot, lastUpdated: r.fetchedAt,
+                        isActive: r.account?.id == active?.id,
+                        reconstructedSpend: ledger.entry(id, account: r.account))
+        }
     }
 }

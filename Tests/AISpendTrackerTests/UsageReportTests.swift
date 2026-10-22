@@ -28,4 +28,29 @@ final class UsageReportTests: XCTestCase {
         let json = try XCTUnwrap(String(data: UsageReport.encode(report), encoding: .utf8))
         XCTAssertFalse(json.contains("812"), "dates must not use Swift's reference-date encoding")
     }
+
+    func testOnlySignedInAccountsAreReportedUnlessAskedFor() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let team = AccountRef(id: "t", label: "Spare"), personal = AccountRef(id: "p", label: "Personal")
+        func snap(_ a: AccountRef, _ u: Double) -> ProviderSnapshot {
+            ProviderSnapshot(windows: [UsageWindow(caption: "5-Hour", utilization: u, resetsAt: now.addingTimeInterval(3600),
+                                                   timeBasis: .rollingWindow(length: WindowLength.fiveHour))], account: a)
+        }
+        let claude = ProviderView(id: .claude, displayName: "Claude", accounts: [
+            AccountView(account: team, snapshot: snap(team, 100), lastUpdated: now, isActive: false),
+            AccountView(account: personal, snapshot: snap(personal, 14), lastUpdated: now, isActive: true),
+        ])
+        let vm = TrayViewModel(providers: [claude], customLimitCents: 0)
+
+        let report = UsageReport.build(from: vm, now: now)
+        XCTAssertEqual(report.providers.map(\.account), ["Personal"])
+        XCTAssertEqual(report.providers.first?.signedIn, true)
+        XCTAssertEqual(report.omittedAccounts, ["Claude: Spare"])
+
+        let all = UsageReport.build(from: vm, now: now, includeInactiveAccounts: true)
+        XCTAssertEqual(all.providers.map(\.signedIn), [false, true])
+        XCTAssertNotNil(all.providers.first?.note)
+        XCTAssertNil(all.providers.last?.note)
+        XCTAssertNil(all.omittedAccounts)
+    }
 }

@@ -94,19 +94,49 @@ struct SpendInfo: Codable, Equatable {
     }
 }
 
+extension UsageWindow {
+    /// This window carried forward to `now` on the assumption that nothing was used since
+    /// it was read: unchanged until its reset passes, then an idle 0% window (a rolling
+    /// window doesn't restart until it's used again, so its next reset is unknown).
+    func assumingNoUseSince(now: Date) -> UsageWindow {
+        guard let resetsAt, resetsAt <= now else { return self }
+        var idle = self
+        idle.utilization = 0
+        idle.resetsAt = nil
+        if case .interval = timeBasis { idle.timeBasis = .none }
+        return idle
+    }
+}
+
+/// The login a reading belongs to, for a provider the user can be signed into under more
+/// than one account (Claude: a personal plan and a Team seat, switched with `/login`).
+/// `id` is the stable key for persistence and ordering; `label` is the short name shown
+/// under the provider's name.
+struct AccountRef: Codable, Equatable, Hashable {
+    var id: String
+    var label: String
+}
+
 /// What every provider returns from a successful fetch: an ordered list of windows
 /// (0…N pies), an optional spend contribution, and an optional `warning` — a problem
 /// worth showing even though the data is good (e.g. Jev's command running slowly).
 /// Unlike a fetch error, a warning is shown on the first occurrence.
+///
+/// `account` names the signed-in account the reading came from, for providers that
+/// report one (Claude). Nil for providers with no notion of multiple accounts — they
+/// keep a single reading.
 struct ProviderSnapshot: Codable, Equatable {
     var windows: [UsageWindow]
     var spend: SpendInfo?
     var warning: String?
+    var account: AccountRef?
 
-    init(windows: [UsageWindow] = [], spend: SpendInfo? = nil, warning: String? = nil) {
+    init(windows: [UsageWindow] = [], spend: SpendInfo? = nil, warning: String? = nil,
+         account: AccountRef? = nil) {
         self.windows = windows
         self.spend = spend
         self.warning = warning
+        self.account = account
     }
 }
 
