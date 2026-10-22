@@ -80,25 +80,36 @@ enum ApplicationsRelocator {
         others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
     }
 
-    /// Copies via a sibling temp bundle so a failed copy never leaves a half-written app.
+    /// Copies via a temp copy so a failed copy never leaves a half-written app. An
+    /// existing install is updated by swapping its `Contents` from a staging folder
+    /// inside the bundle: /Applications is root:admin, so a non-admin user can't create
+    /// anything beside the bundle, but they own the bundle they installed. Only a first
+    /// install needs to write to /Applications itself.
     private static func install(_ source: URL, at dest: URL) throws {
         let fm = FileManager.default
-        let staging = dest.deletingLastPathComponent()
-            .appendingPathComponent(".\(dest.lastPathComponent).\(ProcessInfo.processInfo.processIdentifier)")
-        try? fm.removeItem(at: staging)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        if fm.fileExists(atPath: dest.path) {
+            let contents = dest.appendingPathComponent("Contents")
+            let staging = dest.appendingPathComponent(".Contents.\(pid)")
+            try ditto(source.appendingPathComponent("Contents"), to: staging)
+            _ = try fm.replaceItemAt(contents, withItemAt: staging)
+        } else {
+            let staging = dest.deletingLastPathComponent().appendingPathComponent(".\(dest.lastPathComponent).\(pid)")
+            try ditto(source, to: staging)
+            try fm.moveItem(at: staging, to: dest)
+        }
+    }
+
+    private static func ditto(_ source: URL, to staging: URL) throws {
+        try? FileManager.default.removeItem(at: staging)
         let ditto = Process()
         ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         ditto.arguments = [source.path, staging.path]
         try ditto.run()
         ditto.waitUntilExit()
         guard ditto.terminationStatus == 0 else {
-            try? fm.removeItem(at: staging)
+            try? FileManager.default.removeItem(at: staging)
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: staging.path])
-        }
-        if fm.fileExists(atPath: dest.path) {
-            _ = try fm.replaceItemAt(dest, withItemAt: staging)
-        } else {
-            try fm.moveItem(at: staging, to: dest)
         }
     }
 }
