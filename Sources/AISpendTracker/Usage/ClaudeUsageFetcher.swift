@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The live usage provider. Mirrors SpaceTerm's `claude-usage.ts`:
 ///   • read the OAuth token from the login Keychain item "Claude Code-credentials"
@@ -6,7 +7,7 @@ import Foundation
 ///     fuss; the item's ACL trusts /usr/bin/security);
 ///   • GET https://api.anthropic.com/api/oauth/usage with the OAuth bearer token.
 ///
-/// Each reading is tagged with the signed-in account (see `readSignedInAccount`), so
+/// Each reading is tagged with the account the token belongs to (see `account(for:)`), so
 /// switching between, say, a personal plan and a Team seat keeps each one's windows apart.
 ///
 /// Cadence: the caller must not fetch more than once per 5 minutes.
@@ -17,6 +18,7 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
 
     private static let keychainService = "Claude Code-credentials"
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    private static let profileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
     private static let userAgent = "claude-code/2.1.47"
     private static let timeout: TimeInterval = 5
 
@@ -27,12 +29,9 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
     /// `security` failed for another reason (keychain locked, prompt dismissed,
     /// etc.). `detail` carries the tool's stderr.
     struct KeychainError: Error { let detail: String }
-    /// `~/.claude.json` has no signed-in account to attribute the reading to.
+    /// The profile response named no organization to attribute the reading to.
     struct UnknownAccountError: Error {}
-    /// The signed-in account changed while we were fetching (a `/login` mid-request), so
-    /// the token and the account it was read under may not match. Retried next cooldown.
-    struct AccountChangedError: Error {}
-    /// The usage endpoint returned a non-2xx status.
+    /// The usage or profile endpoint returned a non-2xx status.
     struct UsageAPIError: Error, RawResponseCarrying {
         let status: Int
         let body: String
@@ -58,14 +57,45 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
         }
     }
 
-    func fetch() async throws -> FetchResult {
-        let account = try Self.readSignedInAccount()
-        let token = try Self.readAccessToken()
+    /// The account behind the most recent token, so the profile is looked up once per
+    /// login rather than once per fetch. Locked because "Refresh Now" can overlap a
+    /// scheduled fetch.
+    private let cachedAccount = OSAllocatedUnfairLock<(token: String, account: AccountRef)?>(initialState: nil)
 
-        var req = URLRequest(url: Self.usageURL, timeoutInterval: Self.timeout)
+    func fetch() async throws -> FetchResult {
+        let token = try Self.readAccessToken()
+        let account = try await account(for: token)
+        let (data, raw) = try await Self.get(Self.usageURL, token: token)
+        var snapshot: ProviderSnapshot
+        do {
+            snapshot = try Self.decode(data)
+        } catch {
+            throw ResponseParseError(rawResponse: raw, underlying: error)
+        }
+        snapshot.account = account
+        return FetchResult(snapshot: snapshot, raw: raw)
+    }
+
+    /// The account `token` belongs to, asked of the API with that same token. Deriving it
+    /// from the token is what makes the attribution trustworthy: Claude Code's
+    /// `~/.claude.json` names an account too, but it can lag the Keychain by minutes after
+    /// a `/login`, and other running sessions can write their stale copy back over it.
+    private func account(for token: String) async throws -> AccountRef {
+        if let cached = cachedAccount.withLock({ $0 }), cached.token == token { return cached.account }
+        let (data, raw) = try await Self.get(Self.profileURL, token: token)
+        guard let account = Self.parseAccount(fromProfile: data) else {
+            throw ResponseParseError(rawResponse: raw, underlying: UnknownAccountError())
+        }
+        cachedAccount.withLock { $0 = (token, account) }
+        return account
+    }
+
+    /// GET an OAuth endpoint, returning the body of a 2xx response.
+    private static func get(_ url: URL, token: String) async throws -> (data: Data, raw: String) {
+        var req = URLRequest(url: url, timeoutInterval: timeout)
         req.httpMethod = "GET"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
 
@@ -77,18 +107,7 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
         guard (200..<300).contains(http.statusCode) else {
             throw UsageAPIError(status: http.statusCode, body: raw)
         }
-        var snapshot: ProviderSnapshot
-        do {
-            snapshot = try Self.decode(data)
-        } catch {
-            throw ResponseParseError(rawResponse: raw, underlying: error)
-        }
-        // Claude Code rewrites the Keychain token and ~/.claude.json separately on login,
-        // so only trust the attribution if the account is the same on both sides of the
-        // request. A mismatch would file one account's usage under the other.
-        guard try Self.readSignedInAccount().id == account.id else { throw AccountChangedError() }
-        snapshot.account = account
-        return FetchResult(snapshot: snapshot, raw: raw)
+        return (data, raw)
     }
 
     func classify(_ error: Error) -> String {
@@ -100,9 +119,7 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
         case let e as KeychainError:
             return "Keychain read failed: \(e.detail)"
         case is UnknownAccountError:
-            return "Couldn't tell which Claude account is signed in (~/.claude.json)"
-        case is AccountChangedError:
-            return "Claude account changed during the fetch"
+            return "Couldn't tell which Claude account is signed in"
         case let e as UsageAPIError:
             return e.userMessage
         case let e as URLError:
@@ -137,26 +154,15 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
 
     // MARK: - Account
 
-    private static let claudeConfigURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude.json")
-
-    /// The account Claude Code is signed into, from the `oauthAccount` block Claude Code
-    /// writes to `~/.claude.json` on every login.
-    private static func readSignedInAccount() throws -> AccountRef {
-        guard let data = try? Data(contentsOf: claudeConfigURL),
-              let account = parseAccount(fromClaudeConfig: data) else { throw UnknownAccountError() }
-        return account
-    }
-
     /// The account is keyed by organization: a personal plan and a Team seat share one
     /// user (same email, same account UUID) but are separate organizations with separate
     /// rate limits. A personal plan's organization is auto-named "<email>'s Organization",
     /// which is labeled "Personal"; any other organization goes by its name.
-    static func parseAccount(fromClaudeConfig data: Data) -> AccountRef? {
+    static func parseAccount(fromProfile data: Data) -> AccountRef? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = json["oauthAccount"] as? [String: Any],
-              let orgID = oauth["organizationUuid"] as? String, !orgID.isEmpty else { return nil }
-        let name = (oauth["organizationName"] as? String) ?? ""
+              let org = json["organization"] as? [String: Any],
+              let orgID = org["uuid"] as? String, !orgID.isEmpty else { return nil }
+        let name = (org["name"] as? String) ?? ""
         let label = name.isEmpty || name.hasSuffix("'s Organization") ? "Personal" : name
         return AccountRef(id: orgID, label: label)
     }

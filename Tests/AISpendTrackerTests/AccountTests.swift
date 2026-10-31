@@ -122,12 +122,12 @@ final class AccountTests: XCTestCase {
 
     func testClaudeAccountIsKeyedByOrganizationAndPersonalOrgsAreLabeledPersonal() {
         func parse(_ name: String) -> AccountRef? {
-            let json = #"{"oauthAccount": {"organizationUuid": "org-1", "organizationName": "\#(name)"}}"#
-            return ClaudeUsageFetcher.parseAccount(fromClaudeConfig: Data(json.utf8))
+            let json = #"{"account": {"uuid": "user-1"}, "organization": {"uuid": "org-1", "name": "\#(name)"}}"#
+            return ClaudeUsageFetcher.parseAccount(fromProfile: Data(json.utf8))
         }
         XCTAssertEqual(parse("Spare"), AccountRef(id: "org-1", label: "Spare"))
         XCTAssertEqual(parse("someone@example.com's Organization"), AccountRef(id: "org-1", label: "Personal"))
-        XCTAssertNil(ClaudeUsageFetcher.parseAccount(fromClaudeConfig: Data("{}".utf8)))
+        XCTAssertNil(ClaudeUsageFetcher.parseAccount(fromProfile: Data("{}".utf8)))
     }
 
     func testHiddenScopedWindowDrawsNoCircle() {
