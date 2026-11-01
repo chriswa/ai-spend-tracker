@@ -263,12 +263,12 @@ enum PieChart {
     /// live, stale and carried-forward readings. When `stale` is set the palette is dimmed
     /// and the circle is flagged `isStale`, so a best-effort reading after a failed fetch
     /// differs from a healthy one only in appearance — never in which columns or detail
-    /// it shows. Per-model windows whose caption is in `hidden` are left out.
+    /// it shows. Per-model windows hidden for this account are left out.
     private static func windowCircles(for p: ProviderView, account a: AccountView,
                                       providerPalette pal: Palette, now: Date, stale: Bool,
-                                      hidden: Set<String>) -> [Circle] {
+                                      hidden: HiddenScopedWindows) -> [Circle] {
         let at = a.timeAnchor(now: now)
-        let shown = a.windows(now: now).filter { !($0.isScoped && hidden.contains($0.caption)) }
+        let shown = a.windows(now: now).filter { !($0.isScoped && hidden.contains($0.caption, account: a.account)) }
         return shown.enumerated().map { i, w in
             let series = p.series(forWindow: w.caption, account: a.account)
             let base = w.isScoped ? scopedPalette : pal

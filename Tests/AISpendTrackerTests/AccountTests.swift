@@ -130,15 +130,33 @@ final class AccountTests: XCTestCase {
         XCTAssertNil(ClaudeUsageFetcher.parseAccount(fromProfile: Data("{}".utf8)))
     }
 
-    func testHiddenScopedWindowDrawsNoCircle() {
-        var snap = snapshot(personal, fiveHour: 8, resetsIn: 3600)
+    private func snapshotWithFable(_ account: AccountRef) -> ProviderSnapshot {
+        var snap = snapshot(account, fiveHour: 8, resetsIn: 3600)
         snap.windows.append(UsageWindow(caption: "Fable 7-Day", utilization: 5, resetsAt: now.addingTimeInterval(3600),
                                         timeBasis: .rollingWindow(length: WindowLength.sevenDay), isScoped: true))
-        let claude = ProviderView(id: .claude, displayName: "Claude", snapshot: snap, lastUpdated: now)
+        return snap
+    }
+
+    func testHidingAScopedWindowOnlyAffectsThatAccount() {
+        let claude = ProviderView(id: .claude, displayName: "Claude", accounts: [
+            AccountView(account: team, snapshot: snapshotWithFable(team), lastUpdated: now, isActive: false),
+            AccountView(account: personal, snapshot: snapshotWithFable(personal), lastUpdated: now, isActive: true),
+        ])
         var vm = TrayViewModel(providers: [claude], customLimitCents: 0)
-        XCTAssertEqual(vm.scopedWindowCaptions, ["Fable 7-Day"])
-        XCTAssertEqual(PieChart.circles(from: vm, now: now).map(\.caption), ["5-Hour", "Fable 7-Day"])
-        vm.hiddenScopedWindows = ["Fable 7-Day"]
-        XCTAssertEqual(PieChart.circles(from: vm, now: now).map(\.caption), ["5-Hour"])
+        XCTAssertEqual(vm.scopedWindowToggles.map(\.title),
+                       ["Show Fable 7-Day (Spare)", "Show Fable 7-Day (Personal)"])
+
+        vm.hiddenScopedWindows.set(true, caption: "Fable 7-Day", account: team)
+        let shown = PieChart.circles(from: vm, now: now).map { "\($0.accountLabel ?? "") \($0.caption)" }
+        XCTAssertEqual(shown, ["Spare 5-Hour", "Personal 5-Hour", "Personal Fable 7-Day"])
+
+        vm.hiddenScopedWindows.set(false, caption: "Fable 7-Day", account: team)
+        XCTAssertEqual(vm.hiddenScopedWindows, HiddenScopedWindows())
+    }
+
+    func testScopedWindowToggleOmitsTheAccountWhenThereIsOnlyOne() {
+        let claude = ProviderView(id: .claude, displayName: "Claude", snapshot: snapshotWithFable(personal), lastUpdated: now)
+        let vm = TrayViewModel(providers: [claude], customLimitCents: 0)
+        XCTAssertEqual(vm.scopedWindowToggles.map(\.title), ["Show Fable 7-Day"])
     }
 }

@@ -153,7 +153,7 @@ enum Settings {
     private static let enabledProvidersKey = "aiut.enabledProviders"
     private static let spendDisplayKey = "aiut.spendDisplayMode"
     private static let trayStyleKey = "aiut.trayStyle"
-    private static let hiddenScopedWindowsKey = "aiut.hiddenScopedWindows"
+    private static let hiddenScopedWindowsKey = "aiut.hiddenScopedWindowsByAccount"
 
     /// Default combined spend-pie total ($2500). Always set — the spend pie has a
     /// denominator even before the user customizes it.
@@ -173,14 +173,20 @@ enum Settings {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: spendDisplayKey) }
     }
 
-    /// How each window is drawn in the tray (default: rings).
-    /// Captions of per-model windows (e.g. "Fable 7-Day") the user has hidden from the
-    /// tray and the dropdown. Shown by default.
-    static var hiddenScopedWindows: Set<String> {
-        get { Set(UserDefaults.standard.stringArray(forKey: hiddenScopedWindowsKey) ?? []) }
-        set { UserDefaults.standard.set(newValue.sorted(), forKey: hiddenScopedWindowsKey) }
+    /// Per-model windows (e.g. "Fable 7-Day") the user has hidden from the tray and the
+    /// dropdown, per account. Shown by default.
+    static var hiddenScopedWindows: HiddenScopedWindows {
+        get {
+            let raw = UserDefaults.standard.dictionary(forKey: hiddenScopedWindowsKey) as? [String: [String]]
+            return HiddenScopedWindows(captionsByAccount: (raw ?? [:]).mapValues(Set.init))
+        }
+        set {
+            UserDefaults.standard.set(newValue.captionsByAccount.mapValues { $0.sorted() },
+                                      forKey: hiddenScopedWindowsKey)
+        }
     }
 
+    /// How each window is drawn in the tray (default: rings).
     static var trayStyle: TrayStyle {
         get { TrayStyle(rawValue: UserDefaults.standard.string(forKey: trayStyleKey) ?? "") ?? .rings }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: trayStyleKey) }

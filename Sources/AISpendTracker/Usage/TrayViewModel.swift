@@ -96,6 +96,38 @@ struct ProviderView {
     var hasMultipleAccounts: Bool { accounts.count > 1 }
 }
 
+/// The per-model windows the user has hidden, held per account: the same caption can
+/// matter on one account and not on another.
+struct HiddenScopedWindows: Equatable {
+    /// Captions by account id; a reading with no account files under `noAccountKey`.
+    private(set) var captionsByAccount: [String: Set<String>] = [:]
+
+    private static let noAccountKey = ""
+
+    init(captionsByAccount: [String: Set<String>] = [:]) {
+        self.captionsByAccount = captionsByAccount
+    }
+
+    func contains(_ caption: String, account: AccountRef?) -> Bool {
+        captionsByAccount[account?.id ?? Self.noAccountKey]?.contains(caption) ?? false
+    }
+
+    mutating func set(_ hidden: Bool, caption: String, account: AccountRef?) {
+        let key = account?.id ?? Self.noAccountKey
+        var captions = captionsByAccount[key] ?? []
+        if hidden { captions.insert(caption) } else { captions.remove(caption) }
+        captionsByAccount[key] = captions.isEmpty ? nil : captions
+    }
+}
+
+/// One per-model window on one account, as offered by the menu's "Show …" checkboxes.
+struct ScopedWindowToggle {
+    let account: AccountRef?
+    let caption: String
+    /// The checkbox title; names the account once there's more than one to tell apart.
+    let title: String
+}
+
 /// The whole tray's state: the ordered enabled providers plus the single spend total
 /// the combined spend pie fills against. Shared source of truth for the tray image,
 /// the dropdown header rings, and the menu sections.
@@ -106,17 +138,21 @@ struct TrayViewModel {
     var spendDisplayMode: SpendDisplayMode = .circle
     /// Whether the tray draws rings or bars (the dropdown always keeps rings).
     var trayStyle: TrayStyle = .rings
-    /// Per-model window captions the user has hidden; they draw no circle anywhere.
-    var hiddenScopedWindows: Set<String> = []
+    /// Per-model windows the user has hidden; each draws no circle for its account.
+    var hiddenScopedWindows = HiddenScopedWindows()
 
-    /// Every per-model window caption any account reports, in first-seen order — the
-    /// windows the user can toggle.
-    var scopedWindowCaptions: [String] {
-        var seen: [String] = []
-        for a in providers.flatMap(\.accounts) {
-            for w in a.snapshot.windows where w.isScoped && !seen.contains(w.caption) { seen.append(w.caption) }
+    /// Every per-model window each account reports, in account order — the windows the
+    /// user can toggle.
+    var scopedWindowToggles: [ScopedWindowToggle] {
+        providers.flatMap { p in
+            p.accounts.flatMap { a in
+                a.snapshot.windows.filter(\.isScoped).map { w in
+                    let label = p.hasMultipleAccounts ? a.account?.label : nil
+                    return ScopedWindowToggle(account: a.account, caption: w.caption,
+                                              title: "Show \(w.caption)" + (label.map { " (\($0))" } ?? ""))
+                }
+            }
         }
-        return seen
     }
 
     /// Sum of every enabled provider's spend for the current local calendar month —

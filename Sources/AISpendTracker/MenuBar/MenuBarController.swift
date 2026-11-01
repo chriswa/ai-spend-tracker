@@ -395,14 +395,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
-    /// A "Show Fable 7-Day" checkbox per per-model window any account reports, hiding
-    /// that window's circles from the tray and the dropdown (still in `--json`).
+    /// A "Show Fable 7-Day (Spare)" checkbox per per-model window on each account, hiding
+    /// that account's circle from the tray and the dropdown (still in `--json`).
     private func addScopedWindowToggles() {
-        for caption in vm.scopedWindowCaptions {
-            let item = NSMenuItem(title: "Show \(caption)", action: #selector(toggleScopedWindow(_:)), keyEquivalent: "")
+        for toggle in vm.scopedWindowToggles {
+            let item = NSMenuItem(title: toggle.title, action: #selector(toggleScopedWindow(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = caption
-            item.state = vm.hiddenScopedWindows.contains(caption) ? .off : .on
+            item.representedObject = toggle
+            item.state = vm.hiddenScopedWindows.contains(toggle.caption, account: toggle.account) ? .off : .on
             menu.addItem(item)
         }
     }
@@ -464,10 +464,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleScopedWindow(_ sender: NSMenuItem) {
-        guard let caption = sender.representedObject as? String else { return }
-        if sender.state == .on { vm.hiddenScopedWindows.insert(caption) } else { vm.hiddenScopedWindows.remove(caption) }
+        guard let toggle = sender.representedObject as? ScopedWindowToggle else { return }
+        vm.hiddenScopedWindows.set(sender.state == .on, caption: toggle.caption, account: toggle.account)
         Settings.hiddenScopedWindows = vm.hiddenScopedWindows
-        Log.log("windows: hidden = \(vm.hiddenScopedWindows.sorted())")
+        Log.log("windows: hidden = \(vm.hiddenScopedWindows.captionsByAccount)")
         rebuildMenu(now: Date())
         redraw(now: Date())
     }
