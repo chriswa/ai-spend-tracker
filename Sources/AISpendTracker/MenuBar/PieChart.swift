@@ -65,6 +65,44 @@ enum PieChart {
         Palette(usage: dim(p.usage, 0.5), time: dim(p.time, 0.6), over: dim(p.over, 0.45))
     }
 
+    /// The opaque diagonal stripes laid over the pies and bars of an account other than the
+    /// provider's signed-in one, leaving the readings' own colors showing between them.
+    static let stripeColor = NSColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1)
+    static let stripeWidth: CGFloat = 1
+    static let stripePeriod: CGFloat = 5.3
+
+    /// Stripe `rect`, keeping inside `shape`.
+    static func drawStripes(in rect: NSRect, clippedTo shape: NSBezierPath) {
+        NSGraphicsContext.saveGraphicsState()
+        shape.addClip()
+        let stripes = NSBezierPath()
+        stripes.lineWidth = stripeWidth
+        var x = rect.minX - rect.height
+        while x < rect.maxX {
+            stripes.move(to: NSPoint(x: x, y: rect.minY))
+            stripes.line(to: NSPoint(x: x + rect.height, y: rect.maxY))
+            x += stripePeriod
+        }
+        stripeColor.setStroke()
+        stripes.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// The sparkline background of an inactive account, whose text and sparkline line are
+    /// grayed rather than striped.
+    static let grayedDisc = NSColor(srgbRed: 0.25, green: 0.25, blue: 0.25, alpha: 1)
+
+    /// `c` mixed half-and-half with middle gray in OKLab, keeping its alpha. Mixing in a
+    /// perceptual space halves the chroma and moves lightness halfway without shifting the
+    /// hue. Resolves a dynamic color against the current appearance, so call it while drawing.
+    static func grayed(_ c: NSColor) -> NSColor {
+        let s = c.usingColorSpace(.sRGB) ?? c
+        let lab = OKLab(red: s.redComponent, green: s.greenComponent, blue: s.blueComponent)
+        let gray = OKLab(red: 0.5, green: 0.5, blue: 0.5)
+        return OKLab(l: (lab.l + gray.l) / 2, a: (lab.a + gray.a) / 2, b: (lab.b + gray.b) / 2)
+            .color(alpha: s.alphaComponent)
+    }
+
     private static func dim(_ c: NSColor, _ factor: CGFloat) -> NSColor {
         let s = c.usingColorSpace(.sRGB) ?? c
         return NSColor(srgbRed: s.redComponent * factor, green: s.greenComponent * factor,
@@ -133,6 +171,8 @@ enum PieChart {
         /// Cumulative series (utilization % or spend cents, oldest first) feeding the
         /// per-column sparkline in the dropdown header. Unused by the tray image.
         var spark: [(Date, Double)]
+        /// What `spark` measures, which sets its rate's noise floor. Header-only.
+        var sparkUnit: UsageMath.RateUnit
         /// When this window/pie next resets (nil for an idle window). Drives the
         /// header column's "Reset: …" lines, computed live against the clock.
         var resetsAt: Date?
@@ -155,22 +195,25 @@ enum PieChart {
         /// without re-deriving ownership from captions. Tray-only; the header spaces its
         /// columns evenly.
         var startsGroup: Bool
+        /// Whether this is the combined spend circle, the one group the dropdown header
+        /// leaves unboxed. Header-only.
+        var isSpend: Bool
         /// The account this circle's reading belongs to, drawn on its own row under the
         /// heading in the dropdown header. Nil for providers without accounts. Header-only.
         var accountLabel: String?
-        /// Whether this circle belongs to the currently signed-in account of a provider
-        /// that has more than one. The tray and header underline each run of these, so
-        /// the active account stands out from the others' carried-forward readings.
-        var marksActiveAccount: Bool
+        /// Whether this circle is the carried-forward reading of an account other than the
+        /// provider's signed-in one. Its pie or bar is striped; the dropdown header grays the
+        /// column's text and sparkline to match.
+        var isInactiveAccount: Bool
 
         init(kind: Kind, rawResponse: String? = nil, heading: String? = nil, caption: String,
              usageColor: NSColor, timeColor: NSColor, overColor: NSColor = .white,
              headingColor: NSColor? = nil,
-             spark: [(Date, Double)] = [],
+             spark: [(Date, Double)] = [], sparkUnit: UsageMath.RateUnit = .percent,
              resetsAt: Date? = nil, lastUpdated: Date? = nil,
              pieTooltip: String? = nil, sparkTooltip: String? = nil,
              isStale: Bool = false, startsGroup: Bool = false,
-             accountLabel: String? = nil, marksActiveAccount: Bool = false) {
+             isSpend: Bool = false, accountLabel: String? = nil, isInactiveAccount: Bool = false) {
             self.kind = kind
             self.rawResponse = rawResponse
             self.heading = heading
@@ -180,14 +223,16 @@ enum PieChart {
             self.overColor = overColor
             self.headingColor = headingColor ?? usageColor
             self.spark = spark
+            self.sparkUnit = sparkUnit
             self.resetsAt = resetsAt
             self.lastUpdated = lastUpdated
             self.pieTooltip = pieTooltip
             self.sparkTooltip = sparkTooltip
             self.isStale = isStale
             self.startsGroup = startsGroup
+            self.isSpend = isSpend
             self.accountLabel = accountLabel
-            self.marksActiveAccount = marksActiveAccount
+            self.isInactiveAccount = isInactiveAccount
         }
     }
 
@@ -223,8 +268,7 @@ enum PieChart {
             let errorGlyph = Circle(kind: .error, rawResponse: p.lastRawResponse,
                                     heading: p.displayName, caption: "unavailable",
                                     usageColor: pal.usage, timeColor: pal.time, lastUpdated: p.lastUpdated,
-                                    startsGroup: true, accountLabel: p.activeAccount?.account?.label,
-                                    marksActiveAccount: p.hasMultipleAccounts)
+                                    startsGroup: true, accountLabel: p.activeAccount?.account?.label)
             if p.error != nil, p.activeAccount == nil { out.append(errorGlyph) }
             for a in p.accounts {
                 let hidden = vm.hiddenScopedWindows
@@ -251,10 +295,11 @@ enum PieChart {
                 overColor: spendPalette.over,
                 headingColor: spendPalette.usage,
                 spark: vm.spendSeries,
+                sparkUnit: .dollars,
                 resetsAt: UsageMath.monthResetDate(now: now),
                 lastUpdated: vm.latestUpdate,
                 sparkTooltip: UsageMath.recentPeakText(vm.spendSeries, unit: .dollars),
-                startsGroup: true))
+                startsGroup: true, isSpend: true))
         }
         return out
     }
@@ -281,6 +326,7 @@ enum PieChart {
                            usage: UsageMath.usageFraction(utilization: w.utilization)),
                 rawResponse: a.isActive ? p.lastRawResponse : nil, heading: p.displayName, caption: w.caption,
                 usageColor: wpal.usage, timeColor: wpal.time, overColor: wpal.over,
+                headingColor: a.isActive ? nil : grayed(wpal.usage),
                 spark: series,
                 resetsAt: w.resetsAt,
                 lastUpdated: a.lastUpdated,
@@ -288,7 +334,7 @@ enum PieChart {
                 sparkTooltip: UsageMath.recentPeakText(series, unit: .percent),
                 isStale: stale, startsGroup: i == 0,
                 accountLabel: a.account?.label,
-                marksActiveAccount: a.isActive && p.hasMultipleAccounts)
+                isInactiveAccount: !a.isActive)
         }
     }
 
@@ -299,7 +345,7 @@ enum PieChart {
         switch circle.kind {
         case .pie(let time, let usage):
             drawPie(time: time, usage: usage, in: rect, timeColor: circle.timeColor,
-                    usageColor: circle.usageColor, overColor: circle.overColor,
+                    usageColor: circle.usageColor, overColor: circle.overColor, striped: circle.isInactiveAccount,
                     bordered: bordered, outline: outline)
         case .error:
             drawErrorIcon(in: rect, color: circle.usageColor)
@@ -330,13 +376,13 @@ enum PieChart {
     /// `bordered` leaves a black rim inside the disc (menu only).
     static func drawPie(time: Double, usage: Double, in rect: NSRect,
                         timeColor: NSColor, usageColor: NSColor, overColor: NSColor = .white,
-                        bordered: Bool = true, outline: NSColor = Self.outline) {
+                        striped: Bool = false, bordered: Bool = true, outline: NSColor = Self.outline) {
         let inset = outlineWidth / 2 + 0.25
         let rOuter = min(rect.width, rect.height) / 2 - inset
         let center = NSPoint(x: rect.midX, y: rect.midY)
 
-        // Black backing disc at the full radius. When bordered, the colored content is
-        // drawn inside a thinner radius so the annulus stays black — the pie's rim,
+        // Black backing disc at the full radius. When bordered, the colored content is drawn
+        // inside a thinner radius so the annulus stays black — the pie's rim,
         // which separates it from a pale background in the menu.
         disc.setFill()
         NSBezierPath(ovalIn: NSRect(x: center.x - rOuter, y: center.y - rOuter,
@@ -358,6 +404,12 @@ enum PieChart {
         fillRingWedge(center: center, innerRadius: r * ringInnerRatio, outerRadius: r,
                       from: 0, to: min(1, max(0, usage)), color: usageColor)
         NSGraphicsContext.restoreGraphicsState()
+
+        // Under the outline and the maxed-out mark, so those stay unstriped.
+        if striped {
+            let shape = NSBezierPath(ovalIn: NSRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r))
+            drawStripes(in: shape.bounds, clippedTo: shape)
+        }
 
         strokeOutline(center: center, radius: r, color: outline)
 
@@ -419,5 +471,41 @@ enum PieChart {
         path.close()
         color.setFill()
         path.fill()
+    }
+}
+
+/// A color in the OKLab perceptual color space (Björn Ottosson's sRGB conversion).
+private struct OKLab {
+    var l: CGFloat, a: CGFloat, b: CGFloat
+
+    init(l: CGFloat, a: CGFloat, b: CGFloat) {
+        self.l = l
+        self.a = a
+        self.b = b
+    }
+
+    init(red: CGFloat, green: CGFloat, blue: CGFloat) {
+        func linear(_ c: CGFloat) -> CGFloat { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        let r = linear(red), g = linear(green), bl = linear(blue)
+        let x = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * bl)
+        let y = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * bl)
+        let z = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * bl)
+        l = 0.2104542553 * x + 0.7936177850 * y - 0.0040720468 * z
+        a = 1.9779984951 * x - 2.4285922050 * y + 0.4505937099 * z
+        b = 0.0259040371 * x + 0.7827717662 * y - 0.8086757660 * z
+    }
+
+    func color(alpha: CGFloat) -> NSColor {
+        func gamma(_ c: CGFloat) -> CGFloat {
+            let c = min(1, max(0, c))
+            return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1 / 2.4) - 0.055
+        }
+        let x = pow(l + 0.3963377774 * a + 0.2158037573 * b, 3)
+        let y = pow(l - 0.1055613458 * a - 0.0638541728 * b, 3)
+        let z = pow(l - 0.0894841775 * a - 1.2914855480 * b, 3)
+        return NSColor(srgbRed: gamma(4.0767416621 * x - 3.3077115913 * y + 0.2309699292 * z),
+                       green: gamma(-1.2684380046 * x + 2.6097574011 * y - 0.3413193965 * z),
+                       blue: gamma(-0.0041960863 * x - 0.7034186147 * y + 1.7076147010 * z),
+                       alpha: alpha)
     }
 }

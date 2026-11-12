@@ -59,7 +59,7 @@ final class AccountTests: XCTestCase {
         XCTAssertNil(idle.resetsAt)
     }
 
-    func testCirclesShowEveryAccountInOrderAndMarkOnlyTheActiveOne() {
+    func testCirclesShowEveryAccountInOrderAndFlagTheInactiveOnes() {
         let claude = ProviderView(id: .claude, displayName: "Claude", accounts: [
             AccountView(account: team, snapshot: snapshot(team, fiveHour: 100, resetsIn: -60),
                         lastUpdated: now.addingTimeInterval(-5 * 3600), isActive: false),
@@ -68,17 +68,35 @@ final class AccountTests: XCTestCase {
         ])
         let circles = PieChart.circles(from: TrayViewModel(providers: [claude], customLimitCents: 0), now: now)
         XCTAssertEqual(circles.map(\.accountLabel), ["Spare", "Personal"])
-        XCTAssertEqual(circles.map(\.marksActiveAccount), [false, true])
+        XCTAssertEqual(circles.map(\.isInactiveAccount), [true, false])
+        let brand = PieChart.palette(for: .claude)
+        XCTAssertEqual(circles[0].usageColor, brand.usage, "stripes go over the unaltered colors")
+        XCTAssertEqual(circles[0].headingColor, PieChart.grayed(brand.usage))
+        XCTAssertEqual(circles[0].overColor, .white, "the maxed-out mark stays pure white")
+        XCTAssertEqual(circles[1].usageColor, brand.usage)
         XCTAssertEqual(circles.map(\.startsGroup), [true, true])
         // The team window's reset has passed, so it reads as an idle, empty window.
         XCTAssertEqual(circles[0].kind, .pie(time: 0, usage: 0))
     }
 
-    func testSingleAccountIsNotMarked() {
+    func testGrayingMixesHalfWithMiddleGrayInOKLabAndKeepsAlpha() {
+        func assertMix(_ rgb: [CGFloat], _ expected: [CGFloat], file: StaticString = #filePath, line: UInt = #line) {
+            let c = PieChart.grayed(NSColor(srgbRed: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255, alpha: 0.4))
+            XCTAssertEqual(c.redComponent * 255, expected[0], accuracy: 1, file: file, line: line)
+            XCTAssertEqual(c.greenComponent * 255, expected[1], accuracy: 1, file: file, line: line)
+            XCTAssertEqual(c.blueComponent * 255, expected[2], accuracy: 1, file: file, line: line)
+            XCTAssertEqual(c.alphaComponent, 0.4, accuracy: 0.001, file: file, line: line)
+        }
+        assertMix([224, 168, 46], [175, 149, 101])   // Fable gold
+        assertMix([217, 119, 87], [174, 125, 110])   // Claude orange
+        assertMix([127.5, 127.5, 127.5], [127.5, 127.5, 127.5])   // gray is its own mix
+    }
+
+    func testSingleAccountIsNotInactive() {
         let claude = ProviderView(id: .claude, displayName: "Claude",
                                   snapshot: snapshot(personal, fiveHour: 8, resetsIn: 3600), lastUpdated: now)
         let circles = PieChart.circles(from: TrayViewModel(providers: [claude], customLimitCents: 0), now: now)
-        XCTAssertEqual(circles.map(\.marksActiveAccount), [false])
+        XCTAssertEqual(circles.map(\.isInactiveAccount), [false])
         XCTAssertEqual(circles.map(\.accountLabel), ["Personal"])
     }
 
@@ -120,13 +138,17 @@ final class AccountTests: XCTestCase {
 
     // MARK: - Claude account detection
 
-    func testClaudeAccountIsKeyedByOrganizationAndPersonalOrgsAreLabeledPersonal() {
-        func parse(_ name: String) -> AccountRef? {
-            let json = #"{"account": {"uuid": "user-1"}, "organization": {"uuid": "org-1", "name": "\#(name)"}}"#
+    func testClaudeAccountIsKeyedByOrganizationAndPersonalOrgsAreLabeledByEmailDomain() {
+        func parse(_ name: String, email: String? = "someone@example.com") -> AccountRef? {
+            let emailField = email.map { #", "email": "\#($0)""# } ?? ""
+            let json = #"{"account": {"uuid": "user-1"\#(emailField)}, "organization": {"uuid": "org-1", "name": "\#(name)"}}"#
             return ClaudeUsageFetcher.parseAccount(fromProfile: Data(json.utf8))
         }
         XCTAssertEqual(parse("Spare"), AccountRef(id: "org-1", label: "Spare"))
-        XCTAssertEqual(parse("someone@example.com's Organization"), AccountRef(id: "org-1", label: "Personal"))
+        XCTAssertEqual(parse("someone@example.com's Organization"), AccountRef(id: "org-1", label: "@example.com"))
+        XCTAssertEqual(parse("someone@example.com's Organization", email: nil), AccountRef(id: "org-1", label: "Personal"))
+        XCTAssertEqual(parse("someone's Organization", email: "no-domain"), AccountRef(id: "org-1", label: "Personal"))
+        XCTAssertEqual(parse("someone's Organization", email: "someone@"), AccountRef(id: "org-1", label: "Personal"))
         XCTAssertNil(ClaudeUsageFetcher.parseAccount(fromProfile: Data("{}".utf8)))
     }
 

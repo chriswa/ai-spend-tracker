@@ -16,10 +16,9 @@ enum TrayRings {
 
     /// Rings are uniform, so width is just count × diameter plus the gaps between them —
     /// flush at both ends, no outer margin.
-    static func size(circles: Int, underline: Bool = false) -> NSSize {
+    static func size(circles: Int) -> NSSize {
         let n = max(1, circles)   // always at least one slot so the tray item is clickable
-        let extra = underline ? ActiveAccountUnderline.reservedHeight : 0
-        return NSSize(width: CGFloat(n) * diameter + CGFloat(n - 1) * gap, height: diameter + 2 + extra)
+        return NSSize(width: CGFloat(n) * diameter + CGFloat(n - 1) * gap, height: diameter + 2)
     }
 
     /// Compose a tray image straight from a view model.
@@ -29,7 +28,7 @@ enum TrayRings {
 
     /// `isDark` is the menu bar's appearance. It picks the ring hairline (white on dark,
     /// black on light) — unlike a bar's frame, a ring's hairline sits on its outer edge
-    /// against the bar itself — and the active-account underline, likewise on the bar.
+    /// against the bar itself.
     static func image(circles: [PieChart.Circle], isDark: Bool = true) -> NSImage {
         let outline = PieChart.outline(forDark: isDark)
         // With nothing enabled/fetched, draw a single empty ring so the item stays visible.
@@ -38,18 +37,14 @@ enum TrayRings {
                                usageColor: PieChart.spendPalette.usage,
                                timeColor: PieChart.spendPalette.time)]
             : circles
-        let size = size(circles: drawn.count, underline: ActiveAccountUnderline.isNeeded(drawn))
+        let size = size(circles: drawn.count)
         let image = NSImage(size: size, flipped: false) { _ in
-            // The rings sit 1pt off the top edge; any underline space is below them.
             let y = size.height - 1 - diameter
-            let slots = drawn.indices.map {
-                NSRect(x: CGFloat($0) * (diameter + gap), y: y, width: diameter, height: diameter)
-            }
-            for (c, rect) in zip(drawn, slots) {
+            for (i, c) in drawn.enumerated() {
+                let rect = NSRect(x: CGFloat(i) * (diameter + gap), y: y, width: diameter, height: diameter)
                 // The tray drops the black rim so the tiny pies keep their full size.
                 PieChart.draw(c, in: rect, bordered: false, outline: outline)
             }
-            ActiveAccountUnderline.draw(circles: drawn, slots: slots, isDark: isDark)
             return true
         }
         image.isTemplate = false   // real colors, not a monochrome template

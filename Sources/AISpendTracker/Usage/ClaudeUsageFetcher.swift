@@ -157,14 +157,25 @@ final class ClaudeUsageFetcher: UsageProvider, @unchecked Sendable {
     /// The account is keyed by organization: a personal plan and a Team seat share one
     /// user (same email, same account UUID) but are separate organizations with separate
     /// rate limits. A personal plan's organization is auto-named "<email>'s Organization",
-    /// which is labeled "Personal"; any other organization goes by its name.
+    /// which is labeled by the email's domain ("@example.com") to tell personal plans
+    /// apart; any other organization goes by its name.
     static func parseAccount(fromProfile data: Data) -> AccountRef? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let org = json["organization"] as? [String: Any],
               let orgID = org["uuid"] as? String, !orgID.isEmpty else { return nil }
         let name = (org["name"] as? String) ?? ""
-        let label = name.isEmpty || name.hasSuffix("'s Organization") ? "Personal" : name
-        return AccountRef(id: orgID, label: label)
+        guard name.isEmpty || name.hasSuffix("'s Organization") else {
+            return AccountRef(id: orgID, label: name)
+        }
+        let email = (json["account"] as? [String: Any])?["email"] as? String
+        return AccountRef(id: orgID, label: emailDomainLabel(email) ?? "Personal")
+    }
+
+    /// "someone@example.com" → "@example.com", or nil if there's no domain to show.
+    private static func emailDomainLabel(_ email: String?) -> String? {
+        guard let email, let at = email.lastIndex(of: "@") else { return nil }
+        let domain = email[email.index(after: at)...]
+        return domain.isEmpty ? nil : "@\(domain)"
     }
 
     // MARK: - Decode

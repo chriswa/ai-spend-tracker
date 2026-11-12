@@ -66,7 +66,7 @@ final class SparklineView: NSView {
     private static let gapThreshold: TimeInterval = 8 * 60
 
     override func draw(_ dirtyRect: NSRect) {
-        Sparkline.draw(points: UsageMath.usageRatePoints(samples),
+        Sparkline.draw(points: UsageMath.usageRatePoints(samples, unit: .percent),
                        window: UsageHistory.sparklineWindow, now: Date(),
                        in: bounds, color: .labelColor, gapThreshold: Self.gapThreshold)
     }

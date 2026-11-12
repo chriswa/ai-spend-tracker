@@ -105,7 +105,7 @@ enum DebugRender {
                 (t(25), 30), (t(20), 46), (t(15), 50), (t(10), 51), (t(5), 70), (t(0), 78), // recent, after a gap
             ]
             let sparkRect = NSRect(x: 40, y: height - 56, width: 260, height: 36)
-            Sparkline.draw(points: UsageMath.usageRatePoints(samples),
+            Sparkline.draw(points: UsageMath.usageRatePoints(samples, unit: .percent),
                            window: 2 * 60 * 60, now: now,
                            in: sparkRect, color: PieChart.palette(for: .claude).usage,
                            background: PieChart.palette(for: .claude).time,
@@ -159,7 +159,7 @@ enum DebugRender {
 
         // Two Claude accounts: the signed-in one, then a Team seat last read an hour ago
         // and carried forward (its 5-hour window still capped until it resets).
-        let personal = AccountRef(id: "personal", label: "Personal")
+        let personal = AccountRef(id: "personal", label: "@compassvoyage.net")
         let team = AccountRef(id: "team", label: "Spare")
         let personalSnap = ProviderSnapshot(windows: [
             UsageWindow(caption: "5-Hour", utilization: 8, resetsAt: now.addingTimeInterval(4 * 3600),
@@ -172,6 +172,8 @@ enum DebugRender {
                         timeBasis: .rollingWindow(length: WindowLength.fiveHour)),
             UsageWindow(caption: "7-Day", utilization: 60, resetsAt: now.addingTimeInterval(6 * 24 * 3600),
                         timeBasis: .rollingWindow(length: WindowLength.sevenDay)),
+            UsageWindow(caption: "Fable 7-Day", utilization: 45, resetsAt: now.addingTimeInterval(6 * 24 * 3600),
+                        timeBasis: .rollingWindow(length: WindowLength.sevenDay), isScoped: true),
         ], spend: SpendInfo(usedCents: 12345, apiLimitCents: 50000, label: "Claude extra usage"), account: team)
         let claude = ProviderView(id: .claude, displayName: "Claude",
             snapshot: personalSnap, lastUpdated: now,
@@ -200,7 +202,7 @@ enum DebugRender {
         ]
         let base = (baseOutPath as NSString).deletingPathExtension
         let trayCircles = PieChart.circles(from: vm, now: now)
-        writeScaled(TrayBars.image(circles: trayCircles, isDark: true), scale: 4, background: 0.12,
+        writeScaled(TrayBars.image(circles: trayCircles), scale: 4, background: 0.12,
                     to: base + "-tray-bars.png")
         writeScaled(TrayRings.image(circles: trayCircles, isDark: false), scale: 4, background: 0.92,
                     to: base + "-tray-rings-light.png")

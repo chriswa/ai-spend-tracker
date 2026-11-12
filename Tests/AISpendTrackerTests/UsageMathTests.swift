@@ -116,9 +116,24 @@ final class UsageMathTests: XCTestCase {
             (t.addingTimeInterval(10 * 60), 5),
             (t.addingTimeInterval(20 * 60), 9),
         ]
-        let pts = UsageMath.usageRatePoints(samples)
+        let pts = UsageMath.usageRatePoints(samples, unit: .percent)
         XCTAssertEqual(pts.map { $0.0 }, samples.map { $0.0 })
         XCTAssertEqual(pts.map { $0.1 }, [0, 2, 0, 0.4])
+    }
+
+    /// Spend accruing under a cent a minute (Jev's trickle) reads as no spend at all, in
+    /// both the sparkline and its peak tooltip; a real burst still shows.
+    func testSpendRatesBelowACentAMinuteAreFlattened() {
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let trickle: [(Date, Double)] = [(t, 145.6), (t.addingTimeInterval(300), 145.8), (t.addingTimeInterval(600), 146.0)]
+        XCTAssertEqual(UsageMath.usageRatePoints(trickle, unit: .dollars).map { $0.1 }, [0, 0, 0])
+        XCTAssertNil(UsageMath.recentPeakText(trickle, unit: .dollars))
+
+        let burst = trickle + [(t.addingTimeInterval(900), 196.0)]
+        XCTAssertEqual(UsageMath.usageRatePoints(burst, unit: .dollars).map { $0.1 }, [0, 0, 0, 10])
+        XCTAssertEqual(UsageMath.peakRatePerMinute(burst, unit: .dollars)?.at, t.addingTimeInterval(900))
+        XCTAssertEqual(UsageMath.usageRatePoints(trickle, unit: .percent).map { $0.1 }[1], 0.04, accuracy: 1e-9,
+                       "utilization has no floor")
     }
 
     func testPeakRatePerMinute() {
@@ -129,7 +144,7 @@ final class UsageMathTests: XCTestCase {
             (t.addingTimeInterval(10 * 60), 14),
             (t.addingTimeInterval(15 * 60), 2),
         ]
-        let peak = UsageMath.peakRatePerMinute(points)
+        let peak = UsageMath.peakRatePerMinute(points, unit: .percent)
         XCTAssertEqual(peak?.perMinute ?? 0, 0.6, accuracy: 1e-9)
         XCTAssertEqual(peak?.at, t.addingTimeInterval(10 * 60))
     }
@@ -137,7 +152,7 @@ final class UsageMathTests: XCTestCase {
     func testPeakRateNilWhenNoUsage() {
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         XCTAssertNil(UsageMath.peakRatePerMinute([(t, 5), (t.addingTimeInterval(300), 5),
-                                                  (t.addingTimeInterval(600), 0)]))
+                                                  (t.addingTimeInterval(600), 0)], unit: .percent))
     }
 
     func testTrimmed() {

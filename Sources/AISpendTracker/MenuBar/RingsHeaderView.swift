@@ -3,7 +3,7 @@ import AppKit
 /// A dropdown-menu header that shows a large version of the same circles drawn in
 /// the status bar, laid out side by side. Under each ring, top to bottom: a heading
 /// (the provider name, or the dollar value for the spend pie), the account row when any
-/// provider reports accounts (the signed-in account underlined), the caption ("5-Hour",
+/// provider reports accounts, the caption ("5-Hour",
 /// "Spend", …), "Usage: n%" / "Elapsed: n%" lines, a "Reset: …" countdown, a
 /// column-width sparkline of that metric's recent rate, and an "Updated: …" line (how
 /// long ago that provider last fetched). Hover tooltips carry the extra detail:
@@ -11,12 +11,14 @@ import AppKit
 /// peak on the sparkline. Clicking a provider column's "Updated" line copies that
 /// provider's last raw response (for debugging / error reports). Fed a `PieChart.Circle`
 /// list (built with `errorStyle: .staleData`, so an errored provider appears here as its
-/// dimmed last-good pies, marked with a ⚠︎, rather than the tray's alert glyph). Draws
+/// dimmed last-good pies, marked with a ⚠︎, rather than the tray's alert glyph). A column
+/// for an account other than the signed-in one has a striped pie and grayed text. Draws
 /// nothing until `circles` is set.
 ///
 /// Columns wrap onto further rows rather than grow past `maxWidth`, breaking between
 /// groups (a provider account's windows, the spend pie) so a group stays on one row
-/// whenever it fits.
+/// whenever it fits. Each group except the spend pie sits in a faint rounded box, so one
+/// account's windows read as a unit.
 @MainActor
 final class RingsHeaderView: NSView {
     /// The circles to render (in order); text/values/series come from each `Circle`.
@@ -62,10 +64,10 @@ final class RingsHeaderView: NSView {
     private let minColumnGap: CGFloat = 14
     private func columnGap(columns n: Int) -> CGFloat { max(minColumnGap, 45 - 9 * CGFloat(n)) }
     private var columnGap: CGFloat { columnGap(columns: columnsPerRow) }
-    private let rowGap: CGFloat = 14
+    private let rowGap: CGFloat = 18
     private let leftMargin: CGFloat = 21    // aligns with the standard menu-text indent
     private let minWidth: CGFloat = 220
-    private let topPad: CGFloat = 12
+    private let topPad: CGFloat = 14
     private let captionGap: CGFloat = 6      // ring → heading
     private let headingHeight: CGFloat = 14
     private let captionHeight: CGFloat = 15
@@ -103,8 +105,12 @@ final class RingsHeaderView: NSView {
         let rows = CGFloat(max(1, rowCount))
         return topPad + rows * rowHeight + (rows - 1) * rowGap + bottomPad
     }
-    private let bottomPad: CGFloat = 8
+    private let bottomPad: CGFloat = 10
+    /// How far a group's box reaches past its columns' edges.
+    private let groupBoxInset = NSSize(width: 5, height: 7)
+    private let groupBoxRadius: CGFloat = 8
     private let accountHeight: CGFloat = 13
+    private let minFittedFontSize: CGFloat = 8
 
     /// The account row is laid out only when some column names an account, so a user
     /// with a single login of every provider sees no empty row.
@@ -120,14 +126,9 @@ final class RingsHeaderView: NSView {
         .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
         .foregroundColor: NSColor.secondaryLabelColor,
     ]
-    /// The account row: the signed-in account in the label color, the others grayed.
-    private static let accountAttrsActive: [NSAttributedString.Key: Any] = [
+    private static let accountAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
         .foregroundColor: NSColor.labelColor,
-    ]
-    private static let accountAttrsInactive: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
-        .foregroundColor: NSColor.secondaryLabelColor,
     ]
     private static let statAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
@@ -143,11 +144,15 @@ final class RingsHeaderView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard !circles.isEmpty else { return }
         let now = Date()
+        drawGroupBoxes()
 
         for (i, circle) in circles.enumerated() {
             let rects = columnRects(index: i)
             let colX = rects.column
             PieChart.draw(circle, in: rects.ring)
+            func textAttrs(_ attrs: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+                circle.isInactiveAccount ? Self.grayed(attrs) : attrs
+            }
 
             // Text lines, top-down, each centered in the column.
             var y = rects.ring.minY - captionGap - headingHeight
@@ -164,20 +169,12 @@ final class RingsHeaderView: NSView {
             if hasAccountRow {
                 y -= lineGap + accountHeight
                 if let account = circle.accountLabel {
-                    drawLine(account, attrs: circle.marksActiveAccount ? Self.accountAttrsActive : Self.accountAttrsInactive,
-                             columnX: colX, bottomY: y, height: accountHeight)
-                }
-                // Underline the active account across its columns, bridging the gap to
-                // the next column when it belongs to the same run (as in the tray).
-                if circle.marksActiveAccount {
-                    let continues = i + 1 < circles.count && circles[i + 1].marksActiveAccount
-                        && slots[i + 1].row == slots[i].row
-                    NSColor.labelColor.setFill()
-                    NSRect(x: colX, y: y - 1, width: columnWidth + (continues ? columnGap : 0), height: 1).fill()
+                    drawFittedLine(account, attrs: textAttrs(Self.accountAttrs),
+                                   columnX: colX, bottomY: y, height: accountHeight)
                 }
             }
             y -= lineGap + captionHeight
-            drawLine(circle.caption, attrs: circle.isStale ? Self.captionAttrsStale : Self.captionAttrs,
+            drawLine(circle.caption, attrs: textAttrs(circle.isStale ? Self.captionAttrsStale : Self.captionAttrs),
                      columnX: colX, bottomY: y, height: captionHeight)
 
             // "Updated: 3m ago" / "47s ago" — how long ago this provider last fetched.
@@ -186,7 +183,7 @@ final class RingsHeaderView: NSView {
             // visible and the row stays a stable click target for "copy last response".
             if let updated = circle.lastUpdated {
                 drawLine("Updated: \(UsageMath.formatAgoShort(since: updated, now: now)) ago",
-                         attrs: Self.statAttrs, columnX: colX,
+                         attrs: textAttrs(Self.statAttrs), columnX: colX,
                          bottomY: rects.updated.minY, height: updatedHeight)
             }
 
@@ -196,22 +193,49 @@ final class RingsHeaderView: NSView {
             // but a stale column stays grayed throughout, so it never shouts louder than
             // the live columns beside it.
             let usageAttrs = (usage >= 1 && !circle.isStale) ? Self.statAttrsFull : Self.statAttrs
-            drawLine("Usage: \(pct(usage))%", attrs: usageAttrs, columnX: colX, bottomY: y, height: statHeight)
+            drawLine("Usage: \(pct(usage))%", attrs: textAttrs(usageAttrs), columnX: colX, bottomY: y, height: statHeight)
             y -= lineGap + statHeight
-            drawLine("Elapsed: \(pct(time))%", attrs: Self.statAttrs, columnX: colX, bottomY: y, height: statHeight)
+            drawLine("Elapsed: \(pct(time))%", attrs: textAttrs(Self.statAttrs), columnX: colX, bottomY: y, height: statHeight)
             y -= lineGap + statHeight
-            drawLine(resetCountdown(circle.resetsAt, now: now), attrs: Self.statAttrs,
+            drawLine(resetCountdown(circle.resetsAt, now: now), attrs: textAttrs(Self.statAttrs),
                      columnX: colX, bottomY: y, height: statHeight)
 
             // Column-width sparkline of the recent usage rate, below the stats.
             // Only drawn once there are ≥2 points (else it'd be an empty axis).
             guard circle.spark.count >= 2 else { continue }
-            Sparkline.draw(points: UsageMath.usageRatePoints(circle.spark),
+            Sparkline.draw(points: UsageMath.usageRatePoints(circle.spark, unit: circle.sparkUnit),
                            window: UsageHistory.sparklineWindow, now: now,
-                           in: rects.spark, color: circle.usageColor,
-                           background: .black,
+                           in: rects.spark, color: circle.isInactiveAccount ? PieChart.grayed(circle.usageColor) : circle.usageColor,
+                           background: circle.isInactiveAccount ? PieChart.grayedDisc : .black,
                            gapThreshold: Self.sparkGapThreshold,
                            leftInset: 2, rightInset: 2, vInset: 3)
+        }
+    }
+
+    /// A faint rounded box behind each group of columns other than the spend pie, one per
+    /// row a group spans (a group only wraps when it's wider than a whole row).
+    private func drawGroupBoxes() {
+        var runs: [Range<Int>] = []
+        for i in circles.indices {
+            if let last = runs.last, !circles[i].startsGroup, slots[i].row == slots[last.lowerBound].row {
+                runs[runs.count - 1] = last.lowerBound..<(i + 1)
+            } else {
+                runs.append(i..<(i + 1))
+            }
+        }
+        for run in runs where !circles[run.lowerBound].isSpend {
+            let first = columnRects(index: run.lowerBound), last = columnRects(index: run.upperBound - 1)
+            let box = NSRect(x: first.column, y: last.updated.minY,
+                             width: last.column + columnWidth - first.column,
+                             height: first.ring.maxY - last.updated.minY)
+                .insetBy(dx: -groupBoxInset.width, dy: -groupBoxInset.height)
+            let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5),
+                                    xRadius: groupBoxRadius, yRadius: groupBoxRadius)
+            NSColor.labelColor.withAlphaComponent(0.04).setFill()
+            path.fill()
+            NSColor.labelColor.withAlphaComponent(0.12).setStroke()
+            path.lineWidth = 1
+            path.stroke()
         }
     }
 
@@ -298,12 +322,38 @@ final class RingsHeaderView: NSView {
 
     private func pct(_ fraction: Double) -> Int { Int((fraction * 100).rounded()) }
 
+    /// `attrs` with its text color grayed, for a column of an inactive account.
+    private static func grayed(_ attrs: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+        guard let color = attrs[.foregroundColor] as? NSColor else { return attrs }
+        return attrs.merging([.foregroundColor: PieChart.grayed(color)]) { $1 }
+    }
+
     private func drawLine(_ text: String, attrs: [NSAttributedString.Key: Any],
                           columnX x: CGFloat, bottomY: CGFloat, height: CGFloat) {
         let str = text as NSString
         let size = str.size(withAttributes: attrs)
         str.draw(at: NSPoint(x: x + (columnWidth - size.width) / 2, y: bottomY + (height - size.height) / 2),
                  withAttributes: attrs)
+    }
+
+    /// `drawLine` for free-form text that may be wider than the column (an account's email
+    /// domain): the font shrinks to fit, down to `minFittedFontSize`, and whatever still
+    /// doesn't fit is truncated, so it can't run into the neighboring column.
+    private func drawFittedLine(_ text: String, attrs: [NSAttributedString.Key: Any],
+                                columnX x: CGFloat, bottomY: CGFloat, height: CGFloat) {
+        var attrs = attrs
+        if let font = attrs[.font] as? NSFont {
+            let width = (text as NSString).size(withAttributes: attrs).width
+            if width > columnWidth {
+                let size = max(minFittedFontSize, font.pointSize * columnWidth / width)
+                attrs[.font] = NSFontManager.shared.convert(font, toSize: size)
+            }
+        }
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.lineBreakMode = .byTruncatingTail
+        attrs[.paragraphStyle] = style
+        (text as NSString).draw(in: NSRect(x: x, y: bottomY, width: columnWidth, height: height), withAttributes: attrs)
     }
 }
 

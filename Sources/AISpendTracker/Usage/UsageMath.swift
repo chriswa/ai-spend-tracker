@@ -96,31 +96,53 @@ enum UsageMath {
         return max(0, usedCents / limitCents)
     }
 
-    /// Highest per-minute consumption rate across a cumulative series, and when it
-    /// occurred. Each interval's rate is the (non-negative) rise divided by the
-    /// actual minutes between those two samples — so it's correct even if sampling
-    /// isn't exactly every 5 minutes. Returns nil if there was no positive usage.
-    static func peakRatePerMinute(_ points: [(Date, Double)]) -> (perMinute: Double, at: Date)? {
-        guard points.count >= 2 else { return nil }
-        var best: (perMinute: Double, at: Date)?
-        for i in 1..<points.count {
-            let minutes = points[i].0.timeIntervalSince(points[i - 1].0) / 60
-            guard minutes > 0 else { continue }
-            let rate = max(0, points[i].1 - points[i - 1].1) / minutes
-            if rate > 0, best == nil || rate > best!.perMinute {
-                best = (rate, points[i].0)
+    /// Unit of a cumulative series and its per-minute rate — utilization points, or spend
+    /// in cents.
+    enum RateUnit {
+        case percent, dollars
+
+        /// Rates below this read as zero. Spend has a floor of a cent a minute, so a
+        /// provider that accrues fractions of a cent around the clock (Jev) doesn't
+        /// become the sparkline's whole scale and the "recent peak" while nothing real
+        /// is being spent.
+        var noiseFloorPerMinute: Double {
+            switch self {
+            case .percent: return 0
+            case .dollars: return 1
             }
+        }
+    }
+
+    /// The per-minute rate over the interval ending at each sample after the first: the
+    /// (non-negative) rise divided by the actual minutes between the two samples, so it's
+    /// correct even if sampling isn't exactly every 5 minutes. Drops (window resets, spend
+    /// rollover) and rates under the unit's noise floor read as 0; nil where two samples
+    /// share a timestamp.
+    private static func intervalRates(_ samples: [(Date, Double)], unit: RateUnit) -> [Double?] {
+        guard samples.count >= 2 else { return [] }
+        return (1..<samples.count).map { i in
+            let minutes = samples[i].0.timeIntervalSince(samples[i - 1].0) / 60
+            guard minutes > 0 else { return nil }
+            let rate = max(0, samples[i].1 - samples[i - 1].1) / minutes
+            return rate < unit.noiseFloorPerMinute ? 0 : rate
+        }
+    }
+
+    /// Highest per-minute consumption rate across a cumulative series, and when it
+    /// occurred. Returns nil if there was no positive usage.
+    static func peakRatePerMinute(_ points: [(Date, Double)], unit: RateUnit) -> (perMinute: Double, at: Date)? {
+        var best: (perMinute: Double, at: Date)?
+        for (i, rate) in intervalRates(points, unit: unit).enumerated() {
+            guard let rate, rate > 0, best == nil || rate > best!.perMinute else { continue }
+            best = (rate, points[i + 1].0)
         }
         return best
     }
 
-    /// Unit for a per-minute rate readout — utilization points or dollars.
-    enum RateUnit { case percent, dollars }
-
     /// "Recent peak: 0.5%/min @ 1:00pm" (or "$0.30/min"), or nil without a positive
     /// rate in the series. Shown as the sparkline's tooltip.
     static func recentPeakText(_ points: [(Date, Double)], unit: RateUnit) -> String? {
-        guard let peak = peakRatePerMinute(points) else { return nil }
+        guard let peak = peakRatePerMinute(points, unit: unit) else { return nil }
         let rate: String
         switch unit {
         case .percent: rate = "\(trimmed(peak.perMinute, maxFractionDigits: 2))%"
@@ -156,19 +178,13 @@ enum UsageMath {
 
     /// Convert a cumulative time series (utilization %, or spend cents) into
     /// per-minute *rate* points for the sparkline, keeping each sample's timestamp
-    /// so the line can be plotted on a real time axis. Each point is the
-    /// (non-negative) rise since the previous sample divided by the minutes between
-    /// them; the first point anchors the baseline at 0 (no predecessor), and drops
-    /// (window resets, spend rollover) clamp to 0.
-    static func usageRatePoints(_ samples: [(Date, Double)]) -> [(Date, Double)] {
+    /// so the line can be plotted on a real time axis. Each point is the rate over the
+    /// interval ending there (see `intervalRates`); the first point anchors the baseline
+    /// at 0 (no predecessor).
+    static func usageRatePoints(_ samples: [(Date, Double)], unit: RateUnit) -> [(Date, Double)] {
         guard let first = samples.first else { return [] }
-        var out: [(Date, Double)] = [(first.0, 0)]
-        for i in 1..<samples.count {
-            let minutes = samples[i].0.timeIntervalSince(samples[i - 1].0) / 60
-            let rate = minutes > 0 ? max(0, samples[i].1 - samples[i - 1].1) / minutes : 0
-            out.append((samples[i].0, rate))
-        }
-        return out
+        let rates = intervalRates(samples, unit: unit)
+        return [(first.0, 0)] + rates.indices.map { (samples[$0 + 1].0, rates[$0] ?? 0) }
     }
 
     /// Fraction of the current calendar month that has elapsed (the spend "time"
